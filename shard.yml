@@ -1,0 +1,21 @@
+name: eventbus
+version: 0.9.0
+license: MIT
+crystal: ">= 1.1.1"
+
+targets:
+  eventbus:
+    main: src/eventbus.cr
+
+dependencies:
+  pg:
+    github: will/crystal-pg
+  redis:
+      github: stefanwille/crystal-redis 
+
+
+development_dependencies:
+  # Code style
+  ameba:
+    github: crystal-ameba/ameba
+

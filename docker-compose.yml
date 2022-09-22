@@ -1,0 +1,61 @@
+version: "3.7"
+
+services:
+  postgres:
+    hostname: postgres
+    image: postgres:13-alpine
+    container_name: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: eventbus_dev
+    volumes:
+      - ${PWD}/docker_postgres_init.sql:/docker-entrypoint-initdb.d/docker_postgres_init.sql
+    ports:
+      - "5432:5432"
+
+  redis:
+    hostname: redis
+    image: eqalpha/keydb
+    container_name: redis
+    healthcheck:
+      test: keydb-cli ping
+    environment:
+      - TZ=$TZ
+    ports:
+      - "6379:6379"
+
+  eventbus:
+    build:
+      context: ${PWD}
+      dockerfile: Dockerfile.${EVENTBUS_ENV:-spec}
+      args:
+        CRYSTAL_VERSION: ${CRYSTAL_VERSION:-1.5.0}
+    hostname: eventbus
+    container_name: eventbus
+    # restart: always
+    volumes:
+      - ${PWD}/spec:/app/spec
+      - ${PWD}/src:/app/src
+    environment:
+      GITHUB_ACTION: ${GITHUB_ACTION:-}
+
+      # General
+      SG_ENV: ${SG_ENV}
+
+      # Databases
+
+      ## PostgreSQL
+      PG_DATABASE_URL: ${PG_DATABASE_URL:-postgresql://postgres:password@postgres:5432/eventbus_spec}
+
+      ## Redis / KeyDB
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+
+    depends_on:
+      - postgres
+      - redis

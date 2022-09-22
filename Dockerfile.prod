@@ -1,0 +1,86 @@
+ARG CRYSTAL_VERSION=1.5.0
+FROM 84codes/crystal:${CRYSTAL_VERSION}-alpine as build
+
+# Create a temporary folder to hold the files
+WORKDIR /app
+
+RUN apk upgrade --no-cache \
+    && \
+    apk add --update --no-cache \
+          tzdata \
+#         bash \
+#         ca-certificates \
+#         iputils \
+#     && \
+#     apk add --no-cache -X http://dl-cdn.alpinelinux.org/alpine/edge/testing watchexec \
+    && \
+    update-ca-certificates
+
+
+# Create a non-privileged user
+# defaults are appuser:10001
+ARG IMAGE_UID="10001"
+ENV UID=$IMAGE_UID
+ENV USER=appuser
+
+# See https://stackoverflow.com/a/55757473/12429735RUN
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    "${USER}"
+
+# Copy shard files and install shards
+COPY shard.* .
+
+
+RUN shards install --production --ignore-crystal-version --skip-postinstall --skip-executables
+
+
+# Copy src last for better caching
+COPY src src
+
+# - Build the application
+RUN shards build --production --release --error-trace
+
+SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
+
+# Extract binary dependencies
+RUN for binary in /app/bin/*; do \
+        ldd "$binary" | \
+        tr -s '[:blank:]' '\n' | \
+        grep '^/' | \
+        xargs -I % sh -c 'mkdir -p $(dirname deps%); cp % deps%;'; \
+    done
+
+# Build a minimal docker image
+FROM scratch
+WORKDIR /
+ENV PATH=$PATH:/
+
+# Copy the user information over
+COPY --from=build /etc/passwd /etc/passwd
+COPY --from=build /etc/group /etc/group
+
+# These are required for communicating with external services
+COPY --from=build /etc/hosts /etc/hosts
+
+# These provide certificate chain validation where communicating with external services over TLS
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
+# This is required for Timezone support
+COPY --from=build /usr/share/zoneinfo/ /usr/share/zoneinfo/
+
+# Copy the app into place
+COPY --from=build /app/deps /
+COPY --from=build /app/bin /
+
+# Use an unprivileged user.
+USER appuser:appuser
+
+ENTRYPOINT ["/eventbus"]
+CMD ["/eventbus"]
