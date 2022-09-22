@@ -49,5 +49,5 @@ jobs:
       - name: Run tests
         run: crystal spec -v --error-trace
         env:
-          PG_DATABASE_URL: postgresql://postgres:password@postgres:5432/eventbus_spec
-          REDIS_URL: redis://redis:6379
+          PG_DATABASE_URL: postgresql://postgres:password@localhost:5432/eventbus_spec
+          REDIS_URL: redis://localhost:6379
