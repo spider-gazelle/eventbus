@@ -36,6 +36,9 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+        ports:
+          # Maps tcp port 6379 on service container to the host
+          - 6379:6379
     steps:
       - name: Download source
         uses: actions/checkout@v2
@@ -53,4 +56,4 @@ jobs:
         run: crystal spec -v --error-trace
         env:
           PG_DATABASE_URL: postgresql://postgres:password@localhost:5432/eventbus_spec
-          REDIS_URL: redis://redis:6379
+          REDIS_URL: redis://localhost:6379
