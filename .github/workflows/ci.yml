@@ -16,16 +16,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     services:
       postgres:
-          image: postgres:13-alpine
-          env:
-            POSTGRES_DB: eventbus_spec
-            POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: password
-          options: >-
-            --health-cmd pg_isready
-            --health-interval 10s
-            --health-timeout 5s
-            --health-retries 5
+        image: postgres
+        env:
+          POSTGRES_DB: eventbus_spec
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       redis:
         image: redis
         options: >-
@@ -49,5 +49,5 @@ jobs:
       - name: Run tests
         run: crystal spec -v --error-trace
         env:
-          PG_DATABASE_URL: postgresql://postgres:password@localhost:5432/eventbus_spec
-          REDIS_URL: redis://localhost:6379
+          PG_DATABASE_URL: postgresql://postgres:password@postgres:5432/eventbus_spec
+          REDIS_URL: redis://redis:6379
