@@ -1,20 +1,24 @@
-module EventBus
-  module EventBusSchema
-    Log = App::Log.for("EventInitalizer")
+require "pg"
+require "log"
 
-    def self.init : Bool
+class EventBus
+  private module PG
+    Log     = ::Log.for("PGInitalizer")
+    CHANNEL = "cdc_events"
+
+    def self.ensure_cdc_for_all_tables(url) : Bool
       begin
-        conn = DB.open(App::PG_DATABASE_URL)
-        found = alread_initialized?(conn)
+        conn = DB.open(url)
+        found = already_initialized?(conn)
         Log.info { "DB Schema initialized? - #{found ? "Yes" : "No"}" }
         return true if found
         Log.info { "Initializing DB Schema" }
         conn.exec(SCHEMA_CDC)
-        conn.exec(SCHEMA_TRIGGER)
+        conn.exec(SCHEMA_TRIGGER_4_ALL)
         conn.exec("select public.create_cdc_for_all_tables()")
         Log.info { "DB Schema initialization completed" }
       rescue ex : DB::ConnectionRefused
-        Log.error { "Unable to connect Database url #{App::PG_DATABASE_URL}" }
+        Log.error { "Unable to connect Database url #{url}" }
         Log.error { ex.inspect_with_backtrace }
         return false
       ensure
@@ -23,7 +27,23 @@ module EventBus
       true
     end
 
-    private def self.alread_initialized?(conn) : Bool
+    def self.ensure_cdc_for(url, table) : Bool
+      begin
+        conn = DB.open(url)
+        conn.exec(SCHEMA_CDC) unless already_initialized?(conn)
+        conn.exec(sprintf(DROP_TRIGGER, table))
+        conn.exec(sprintf(CREATE_TRIGGER, table))
+      rescue ex : DB::ConnectionRefused
+        Log.error { "Unable to connect Database url #{url}" }
+        Log.error { ex.inspect_with_backtrace }
+        return false
+      ensure
+        conn.try &.close
+      end
+      true
+    end
+
+    private def self.already_initialized?(conn) : Bool
       conn.exec("select 'create_cdc_for_all_tables'::regproc;")
       true
     rescue
@@ -58,7 +78,7 @@ BEGIN
 
      -- note that channel name MUST be lowercase, otherwise pg_notify() won't work
     -- Execute pg_notify(channel, notification)
-    PERFORM pg_notify('cdc_events',notification::text);
+    PERFORM pg_notify('#{CHANNEL}',notification::text);
     -- Result is ignored since we are invoking this in an AFTER trigger
     RETURN NULL;
 END;
@@ -66,7 +86,7 @@ $$ LANGUAGE plpgsql;
 
 SQL
 
-    SCHEMA_TRIGGER = <<-SQL
+    SCHEMA_TRIGGER_4_ALL = <<-SQL
 -- Instead of manually creating triggers for each table, create CDC Trigger For All tables with id column
 
 CREATE OR REPLACE FUNCTION public.create_cdc_for_all_tables() RETURNS void AS $$
@@ -95,6 +115,14 @@ BEGIN
   END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+SQL
+
+    DROP_TRIGGER   = "DROP TRIGGER IF EXISTS notify_change_event ON %s;"
+    CREATE_TRIGGER = <<-SQL
+
+CREATE TRIGGER notify_change_event AFTER INSERT OR UPDATE OR DELETE ON %s
+FOR EACH ROW EXECUTE PROCEDURE public.notify_change();
 
 SQL
   end

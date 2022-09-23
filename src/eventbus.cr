@@ -1,42 +1,52 @@
-require "./constants"
-include EventBus
-puts "Launching #{App::NAME} v#{App::VERSION}"
+require "./eventbus/*"
 
-require "./config"
+class EventBus
+  def initialize(@url : String)
+    @handlers = Array(EventHandler).new
+    @shutdown = Channel(Nil).new
+    @listener = PGListener.new(@url, PG::CHANNEL)
+    @blocking = false
+  end
 
-unless EventBusSchema.init
-  puts "Unable to initialize schema. Terminating..."
-  exit(1)
+  def self.new(url : URI, *handler : EventHandler)
+    new(url).add_handler(*handler)
+  end
+
+  def add_handler(*handler : EventHandler)
+    @handlers.concat(handler.to_a)
+    self
+  end
+
+  def remove_handler(*handler : EventHandler)
+    handler.each { |h| @handlers.delete(h) }
+    self
+  end
+
+  def ensure_cdc_for_all_tables : Bool
+    PG.ensure_cdc_for_all_tables(@url)
+  end
+
+  def ensure_cdc_for(table : String) : Bool
+    PG.ensure_cdc_for(@url, table)
+  end
+
+  def start : Nil
+    dispatch(:start)
+    @listener.on_event(->on_event(DBEvent))
+    @listener.start ->{ dispatch(:connect) }
+    @blocking = false
+  end
+
+  def run : Nil
+    start
+    @blocking = true
+    @shutdown.receive
+  end
+
+  def close : Nil
+    @listener.stop ->{ dispatch(:close) }
+    @shutdown.send(nil) if @blocking
+  ensure
+    @db.try &.close
+  end
 end
-
-server = Application.new
-
-terminate = Proc(Signal, Nil).new do |signal|
-  puts " > terminating gracefully"
-  spawn { server.close }
-  signal.ignore
-end
-
-# Detect ctr-c to shutdown gracefully
-# Docker containers use the term signal
-Signal::INT.trap &terminate
-Signal::TERM.trap &terminate
-
-# Allow signals to change the log level at run-time
-logging = Proc(Signal, Nil).new do |signal|
-  level = signal.usr1? ? Log::Severity::Debug : Log::Severity::Info
-  puts " > Log level changed to #{level}"
-  Log.builder.bind "#{App::NAME}.*", level, App::LOG_BACKEND
-  signal.ignore
-end
-
-# Turn on DEBUG level logging `kill -s USR1 %PID`
-# Default production log levels (INFO and above) `kill -s USR2 %PID`
-Signal::USR1.trap &logging
-Signal::USR2.trap &logging
-
-# Start the server
-server.run
-
-# Shutdown message
-puts "#{App::NAME} leaps through the veldt\n"
