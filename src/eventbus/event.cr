@@ -1,6 +1,6 @@
-module EventBus
-  annotation AutoWire; end
+require "json"
 
+class EventBus
   abstract class EventHandler
     # Method invoked whenever there is new `Event` received.
     abstract def on_event(event : Event) : Nil
@@ -32,7 +32,7 @@ module EventBus
   end
 
   @[JSON::Serializable::Options(emit_nulls: true)]
-  record Event, timestamp : Time, schema : String, table : String, action : Action, id : Int64, data : String? do
+  record Event, timestamp : Time, schema : String, table : String, action : Action, id : JSON::Any, data : String? do
     include JSON::Serializable
   end
 end
