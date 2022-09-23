@@ -42,9 +42,11 @@ RUN shards install --production --ignore-crystal-version --skip-postinstall --sk
 
 # Copy src last for better caching
 COPY src src
+COPY example example
+RUN mkdir -p bin
 
-# - Build the application
-RUN shards build --production --release --error-trace
+# - Build the demo application
+RUN crystal build --release --no-debug -o bin/eventbus example/application.cr 
 
 SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 

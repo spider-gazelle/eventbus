@@ -30,7 +30,7 @@ class EventBus
 
   private def fetch(evt : DBEvent) : String?
     return nil if evt.action == Action::DELETE
-    connection.query_one? "select to_json(t) from #{evt.schema}.#{evt.table} t where t.id = #{evt.id}", &.read(JSON::Any).to_json
+    connection.query_one? "select to_json(t) from #{evt.schema}.#{evt.table} t where t.id = $1", evt.id, &.read(JSON::Any).to_json
   end
 
   private enum LifeCycleEvent
