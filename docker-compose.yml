@@ -25,8 +25,6 @@ services:
     container_name: redis
     healthcheck:
       test: keydb-cli ping
-    environment:
-      - TZ=$TZ
     ports:
       - "6379:6379"
 
@@ -43,16 +41,8 @@ services:
       - ${PWD}/spec:/app/spec
       - ${PWD}/src:/app/src
     environment:
-      GITHUB_ACTION: ${GITHUB_ACTION:-}
-
-      # General
-      SG_ENV: ${SG_ENV}
-
-      # Databases
-
       ## PostgreSQL
       PG_DATABASE_URL: ${PG_DATABASE_URL:-postgresql://postgres:password@postgres:5432/eventbus_spec}
-
       ## Redis / KeyDB
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
 

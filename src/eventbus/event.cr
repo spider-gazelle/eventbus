@@ -31,8 +31,7 @@ class EventBus
     end
   end
 
-  @[JSON::Serializable::Options(emit_nulls: true)]
-  record Event, timestamp : Time, schema : String, table : String, action : Action, id : JSON::Any, data : String? do
+  record Event, timestamp : Time, schema : String, table : String, action : Action, id : JSON::Any, data : String do
     include JSON::Serializable
   end
 end

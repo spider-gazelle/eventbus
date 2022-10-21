@@ -30,6 +30,10 @@ class EventBus
     PG.ensure_cdc_for(@url, table)
   end
 
+  def disable_cdc_for(table : String) : Nil
+    PG.disable_cdc_for(@url, table)
+  end
+
   def start : Nil
     dispatch(:start)
     @listener.on_event(->on_event(DBEvent))

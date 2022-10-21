@@ -1,3 +1,8 @@
+require "json"
+require "db"
+require "pg"
+require "./event"
+
 class EventBus
   @db : DB::Database?
 
@@ -28,9 +33,8 @@ class EventBus
     (@db ||= DB.open(@url)).not_nil!
   end
 
-  private def fetch(evt : DBEvent) : String?
-    return nil if evt.action == Action::DELETE
-    connection.query_one? "select to_json(t) from #{evt.schema}.#{evt.table} t where t.id = $1", evt.id, &.read(JSON::Any).to_json
+  private def fetch(evt : DBEvent) : String
+    connection.query_one "select event_data from public.eventbus_cdc_events where id = $1", evt.logid, &.read(JSON::Any).to_json
   end
 
   private enum LifeCycleEvent
@@ -67,7 +71,7 @@ class EventBus
     end
   end
 
-  private record DBEvent, timestamp : Time, schema : String, table : String, action : Action, id : JSON::Any do
+  private record DBEvent, logid : Int64, timestamp : Time, schema : String, table : String, action : Action, id : JSON::Any do
     include JSON::Serializable
   end
 end
