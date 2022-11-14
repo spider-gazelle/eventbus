@@ -33,9 +33,9 @@ class EventBus
   private def error_handler(err : ErrHandlerType)
     @retry_attempt += 1
     if @retry_attempt <= @retry_count
-      Log.warn { "Received error '#{err.message}'. Disconnected from database, retrying attempt ##{@retry_attempt} after #{@retry_interval} seconds" }
+      Log.warn { "Received error '#{err.message || err.class.name}'. Disconnected from database, retrying attempt ##{@retry_attempt} after #{@retry_interval} seconds" }
       sleep(@retry_interval)
-      @listener.start ->{ dispatch(:connect) }
+      spawn {@listener.start ->{ dispatch(:connect) }}
     else
       Log.error(exception: err) { "Giving up after attempting #{@retry_count} retries to re-connect to database." }
       if (on_error = @on_error)
@@ -107,6 +107,7 @@ class EventBus
           @error_handler.try &.call(ex)
           @listener = nil
         end
+        Fiber.yield
       end
     end
 
