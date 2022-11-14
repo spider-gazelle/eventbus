@@ -9,7 +9,7 @@ REDIS_URL       = ENV["REDIS_URL"]
 
 puts "Starting EventBus Application"
 
-evtbus = EventBus.new(PG_DATABASE_URL)
+evtbus = EventBus.new(PG_DATABASE_URL, retry_attempts: 3, retry_interval: 4)
 
 unless evtbus.ensure_cdc_for_all_tables
   puts "Unable to initialize schema. Terminating..."
@@ -17,6 +17,13 @@ unless evtbus.ensure_cdc_for_all_tables
 end
 
 evtbus.add_handler(EventLogger.new, RedisPublisher.new(REDIS_URL))
+
+evtbus.on_error ->(ex : EventBus::ErrHandlerType) {
+  puts " Received Fatal error from EventBus\n"
+  puts ex
+  puts "\n terminating gracefully"
+  evtbus.close rescue nil
+}
 
 terminate = Proc(Signal, Nil).new do |signal|
   puts " > terminating gracefully"

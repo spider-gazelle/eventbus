@@ -1,10 +1,50 @@
+require "log"
 require "json"
 require "db"
 require "pg"
+require "../ext/pg"
 require "./event"
 
+# :nodoc:
+module EventBusLogger
+  ::Log.progname = "EventBus"
+  log_backend = ::Log::IOBackend.new
+  log_level = ::Log::Severity::Info
+
+  builder = ::Log.builder
+  builder.bind "*", log_level, log_backend
+
+  ::Log.setup_from_env(
+    default_level: log_level,
+    builder: builder,
+    backend: log_backend,
+    log_level_env: "LOG_LEVEL",
+  )
+end
+
 class EventBus
+  include ::EventBusLogger
+
   @db : DB::Database?
+  @retry_attempt : Int32 = 0
+  @retry_interval : Int32
+  @retry_count : Int32
+
+  private def error_handler(err : ErrHandlerType)
+    @retry_attempt += 1
+    if @retry_attempt <= @retry_count
+      Log.warn { "Received EOF error. Disconnected from database, retrying attempt ##{@retry_attempt} after #{@retry_interval} seconds" }
+      sleep(@retry_interval)
+      @listener.start ->{ dispatch(:connect) }
+    else
+      Log.error(exception: err) { "Giving up after attempting #{@retry_count} retries to re-connect to database." }
+      if (on_error = @on_error)
+        on_error.call(err)
+      else
+        raise err
+      end
+    end
+  end
 
   private def dispatch(evt : DBEvent)
     event = enrich(evt)
@@ -16,7 +56,7 @@ class EventBus
   private def dispatch(evt : LifeCycleEvent)
     case evt
     in .start?   then @handlers.each { |h| spawn { h.on_start } }
-    in .connect? then @handlers.each { |h| spawn { h.on_connect } }
+    in .connect? then @handlers.each { |h| spawn { @retry_attempt = 0; h.on_connect } }
     in .close?   then @handlers.each { |h| spawn { h.on_close } }
     end
   end
@@ -47,8 +87,9 @@ class EventBus
     @listener : ::PG::ListenConnection?
     @handler : (DBEvent ->)?
     @channels : Enumerable(String)
+    @error_handler : (Exception ->)?
 
-    def initialize(@url : String, *channel : String)
+    def initialize(@url : String, *channel : String, @error_handler = nil)
       @channels = channel
     end
 
@@ -57,8 +98,17 @@ class EventBus
     end
 
     def start(h : Proc? = nil)
-      @listener ||= ::PG.connect_listen(@url, @channels, &->event_handler(PQ::Notification))
-      h.try &.call
+      @listener || begin
+        spawn do
+          @listener = ::PG.connect_listen(@url, @channels, true, &->event_handler(PQ::Notification)).tap do |l|
+            h.try &.call
+            l.start
+          end
+        rescue ex
+          @error_handler.try &.call(ex)
+          @listener = nil
+        end
+      end
     end
 
     def stop(h : Proc? = nil)
