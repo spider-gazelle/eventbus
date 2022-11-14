@@ -35,7 +35,7 @@ class EventBus
     if @retry_attempt <= @retry_count
       Log.warn { "Received error '#{err.message || err.class.name}'. Disconnected from database, retrying attempt ##{@retry_attempt} after #{@retry_interval} seconds" }
       sleep(@retry_interval)
-      spawn {@listener.start ->{ dispatch(:connect) }}
+      spawn { @listener.start ->{ dispatch(:connect) } }
     else
       Log.error(exception: err) { "Giving up after attempting #{@retry_count} retries to re-connect to database." }
       if (on_error = @on_error)
