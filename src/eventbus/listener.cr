@@ -33,7 +33,7 @@ class EventBus
   private def error_handler(err : ErrHandlerType)
     @retry_attempt += 1
     if @retry_attempt <= @retry_count
-      Log.warn { "Received EOF error. Disconnected from database, retrying attempt ##{@retry_attempt} after #{@retry_interval} seconds" }
+      Log.warn { "Received error '#{err.message}'. Disconnected from database, retrying attempt ##{@retry_attempt} after #{@retry_interval} seconds" }
       sleep(@retry_interval)
       @listener.start ->{ dispatch(:connect) }
     else
@@ -100,10 +100,9 @@ class EventBus
     def start(h : Proc? = nil)
       @listener || begin
         spawn do
-          @listener = ::PG.connect_listen(@url, @channels, true, &->event_handler(PQ::Notification)).tap do |l|
-            h.try &.call
-            l.start
-          end
+          @listener = ::PG.connect_listen(@url, @channels, true, &->event_handler(PQ::Notification))
+          h.try &.call
+          @listener.try &.start
         rescue ex
           @error_handler.try &.call(ex)
           @listener = nil
