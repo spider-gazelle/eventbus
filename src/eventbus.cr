@@ -9,11 +9,18 @@ class EventBus
   def initialize(@url : String, **options)
     @handlers = Array(EventHandler).new
     @shutdown = Channel(Nil).new
-    @listener = PGListener.new(@url, PG::CHANNEL, error_handler: ->error_handler(ErrHandlerType))
     @blocking = false
     @on_error = nil
-    @retry_count = options.fetch("retry_attempts", 5)
+    @retry_count = options.fetch("retry_attempts", 0)
     @retry_interval = options.fetch("retry_interval", 5)
+    @watchdog_interval = options.fetch("watchdog_interval", 5)
+    @timeout = options.fetch("timeout", 5)
+    @listener = PGListener.new(@url, PG::CHANNEL, retry_count: @retry_count,
+      error_handler: ->error_handler(ErrHandlerType),
+      set_count: ->(attempts : Int32) : Nil { @retry_attempt = attempts },
+      watchdog_interval: @watchdog_interval,
+      timeout: @timeout
+    )
   end
 
   def self.new(url : URI, *handler : EventHandler)
@@ -63,6 +70,6 @@ class EventBus
     @listener.stop ->{ dispatch(:close) }
     @shutdown.send(nil) if @blocking
   ensure
-    @db.try &.close
+    close_db
   end
 end

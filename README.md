@@ -1,6 +1,22 @@
 # Magic EventBus
 
-Crystal shard to capture _Postgres_ database change events via _LISTEN/NOTIFY_ mechanism and publish them to `EventBus::EventHandler`s for further processing. On Database connection error, shard will retry number of `retry_attempts` after every `retry_interval` seconds to try to establish connection to database, and on failure after `retry_attempts`, it will invoke `on_error` callback to give control back to your application.
+Crystal shard to capture _Postgres_ database change events via _LISTEN/NOTIFY_ mechanism and publish them to `EventBus::EventHandler`s for further processing. Shard comes with **retry and watchdog** functionality, and try to re-connect automatically until it has exhausted all of the configured `retry_attempts`. To configure **Retry Mechanics** and **WatchDog** follow below configuration options.
+
+### Retry Configuration
+
+* `retry_attempts`: Number of attempts to try before giving up. Use `0` or less for **infinite attempts**. Default `0`
+* `retry_interval`: Interval in seconds to wait for next attempt to re-connect. Default to `5` seconds.
+
+> Set `on_error` call back if you want to receive final give-up message, along with last exception received on re-connection attempt. _If no `on_error` callback is configured, it will raise the **last exception**_
+
+### WatchDog Configurations
+
+Shard monitors the database connectivity in a separate connection and watch for disconnection/freeze like situations and follow the same semantics of retrying after configured interval. To configure watchdog heartbeat interval and connection time_out, configure `EventBus` with below configurations.
+
+* `watchdog_interval` : Heart beat interval in seconds. Default to `5` seconds
+* `timeout`: Interval in seconds to wait for network connectivity. Default to `5` seconds.
+
+WatchDog will trigger at every `watchdog_interval` and wait for connection status for `timeout` seconds before timing out.
 
 ### `EventBus::EventHandler` Lifecycle  methods
 
