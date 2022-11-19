@@ -63,10 +63,10 @@ class EventBus
       false
     end
 
-    DROP_TRIGGER   = "DROP TRIGGER IF EXISTS eventbus_notify_change_event ON %s;"
+    DROP_TRIGGER   = "DROP TRIGGER IF EXISTS eventbus_notify_change_event ON \"%s\";"
     CREATE_TRIGGER = <<-SQL
 
-CREATE TRIGGER eventbus_notify_change_event AFTER INSERT OR UPDATE OR DELETE ON %s
+CREATE TRIGGER eventbus_notify_change_event AFTER INSERT OR UPDATE OR DELETE ON "%s"
 FOR EACH ROW EXECUTE PROCEDURE public.eventbus_notify_change();
 
 SQL
