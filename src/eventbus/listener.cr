@@ -87,15 +87,16 @@ class EventBus
   end
 
   private def enrich(evt : DBEvent)
-    Event.new(evt.timestamp, evt.schema, evt.table, evt.action, evt.id, fetch(evt))
+    Event.new(evt.timestamp, evt.schema, evt.table, evt.action, evt.id, *fetch(evt))
   end
 
   private def on_event(event : DBEvent)
     dispatch(event)
   end
 
-  private def fetch(evt : DBEvent) : String
-    connection(&.query_one "select event_data from public.eventbus_cdc_events where id = $1", evt.logid, &.read(JSON::Any).to_json)
+  private def fetch(evt : DBEvent) : Tuple(String, String?)
+    res = connection(&.query_one "select event_data, change_data from public.eventbus_cdc_events where id = $1", evt.logid, as: {JSON::Any, JSON::Any?})
+    {res[0].to_json, res[1].try &.to_json}
   end
 
   private enum LifeCycleEvent

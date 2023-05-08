@@ -84,6 +84,9 @@ SQL
         );
       ),
       %(
+        ALTER TABLE eventbus_cdc_events ADD COLUMN IF NOT EXISTS change_data JSONB;
+      ),
+      %(
         CREATE OR REPLACE FUNCTION public.eventbus_cdc_cleanup() RETURNS TRIGGER AS $$
         BEGIN
             DELETE FROM eventbus_cdc_events where created_at < CURRENT_TIMESTAMP - INTERVAL '1 day';
@@ -103,6 +106,7 @@ SQL
             data record;
             log_id integer;
             notification json;
+            change json;
         BEGIN
             -- Convert the old or new row to JSON, based on the kind of action.
             -- Action = DELETE?             -> OLD row
@@ -113,12 +117,21 @@ SQL
                 data =  NEW;
             END IF;
 
-          -- Save data to events table
-          INSERT INTO eventbus_cdc_events(event_schema, event_table, event_action, row_id, created_at, event_data)
-                VALUES (TG_TABLE_SCHEMA,TG_TABLE_NAME, LOWER(TG_OP), data.id, CURRENT_TIMESTAMP, to_jsonb(data) )
+            IF (TG_OP = 'UPDATE') THEN
+              change := (SELECT JSON_AGG(src) FROM (SELECT pre.key AS field, pre.value AS old, post.value AS new
+                                  FROM jsonb_each(to_jsonb(OLD)) AS pre
+                                  CROSS JOIN jsonb_each(to_jsonb(NEW)) AS post
+                                  WHERE pre.key = post.key AND pre.value IS DISTINCT FROM post.value) src);
+            ELSE
+              change := NULL;
+            END IF;
+
+           -- Save data to events table
+           INSERT INTO eventbus_cdc_events(event_schema, event_table, event_action, row_id, created_at, event_data, change_data)
+                VALUES (TG_TABLE_SCHEMA,TG_TABLE_NAME, LOWER(TG_OP), data.id, CURRENT_TIMESTAMP, to_jsonb(data), change)
                 RETURNING id INTO log_id;
-          -- Construct json payload
-          -- note that here can be done projection
+           -- Construct json payload
+           -- note that here can be done projection
             notification = json_build_object(
                                 'logid', log_id,
                                 'timestamp',CURRENT_TIMESTAMP,
@@ -127,7 +140,7 @@ SQL
                                 'action', LOWER(TG_OP),
                                 'id', data.id);
 
-            -- note that channel name MUST be lowercase, otherwise pg_notify() won't work
+             -- note that channel name MUST be lowercase, otherwise pg_notify() won't work
             -- Execute pg_notify(channel, notification)
             PERFORM pg_notify('cdc_events',notification::text);
             -- Result is ignored since we are invoking this in an AFTER trigger

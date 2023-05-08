@@ -19,6 +19,10 @@ def insert_rec(id : Int)
   run_sql("insert into #{TABLE} values(#{id}, 'Testing')")
 end
 
+def update_rec(id : Int, value : String)
+  run_sql("update #{TABLE} set name = '#{value}' where id = #{id}")
+end
+
 class SpecHandler < EventBus::EventHandler
   getter events : Array(String)
 

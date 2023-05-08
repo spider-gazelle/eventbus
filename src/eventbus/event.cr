@@ -31,7 +31,7 @@ class EventBus
     end
   end
 
-  record Event, timestamp : Time, schema : String, table : String, action : Action, id : JSON::Any, data : String do
+  record Event, timestamp : Time, schema : String, table : String, action : Action, id : JSON::Any, data : String, changes : String? do
     include JSON::Serializable
   end
 end

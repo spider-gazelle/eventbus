@@ -57,4 +57,21 @@ describe EventBus do
     end
     eb.close
   end
+
+  it "can receive change fields" do
+    ch = Channel(EventBus::Event).new
+    eb = EventBus.new(PG_DATABASE_URL)
+    eb.add_handler SpecHandler.new(ch)
+    eb.start
+    insert_rec(1)
+    evt = ch.receive
+    evt.schema.should eq("public")
+    evt.table.should eq("spec_test")
+    evt.id.should eq(1)
+    evt.data.should eq(%({"id":1,"name":"Testing"}))
+    update_rec(1, "New Testing")
+    evt = ch.receive
+    evt.changes.should eq(%([{"new":"New Testing","old":"Testing","field":"name"}]))
+    eb.close
+  end
 end
