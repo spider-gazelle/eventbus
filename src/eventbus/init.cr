@@ -9,9 +9,6 @@ class EventBus
     def self.ensure_cdc_for_all_tables(url) : Bool
       begin
         conn = DB.open(url)
-        found = already_initialized?(conn)
-        Log.info { "DB Schema initialized? - #{found ? "Yes" : "No"}" }
-        return true if found
         Log.info { "Initializing DB Schema" }
         setup_eventbus(conn)
         conn.exec("select public.eventbus_cdc_for_all_tables()")
@@ -29,7 +26,7 @@ class EventBus
     def self.ensure_cdc_for(url, table) : Bool
       begin
         conn = DB.open(url)
-        setup_eventbus(conn) unless already_initialized?(conn)
+        setup_eventbus(conn)
         conn.exec(sprintf(DROP_TRIGGER, table))
         conn.exec(sprintf(CREATE_TRIGGER, table))
       rescue ex : DB::ConnectionRefused
@@ -51,16 +48,6 @@ class EventBus
 
     private def self.setup_eventbus(conn)
       EVENT_LOGGER_SETUP.each { |sql| conn.exec(sql) }
-    end
-
-    private def self.already_initialized?(conn) : Bool
-      conn.exec(%(
-        select 'public.eventbus_cdc_events'::regclass, 'public.eventbus_cdc_cleanup'::regproc,
-        'eventbus_cdc_for_all_tables'::regproc, 'eventbus_notify_change'::regproc;
-        ))
-      true
-    rescue
-      false
     end
 
     DROP_TRIGGER   = "DROP TRIGGER IF EXISTS eventbus_notify_change_event ON \"%s\";"
@@ -95,12 +82,20 @@ SQL
         $$ LANGUAGE plpgsql;
       ),
       %(
-        DROP TRIGGER IF EXISTS eventbus_cdc_events_trigger ON eventbus_cdc_events;
-      ),
+        DO $$
+        BEGIN
+          IF NOT EXISTS(SELECT * FROM information_schema.triggers
+            WHERE event_object_table = 'eventbus_cdc_events'
+            AND trigger_name = 'eventbus_cdc_events_trigger'
+          )
+          THEN
+            CREATE TRIGGER eventbus_cdc_events_trigger AFTER INSERT ON eventbus_cdc_events
+            EXECUTE PROCEDURE public.eventbus_cdc_cleanup();
+          END IF;
+        END;
+        $$ LANGUAGE plpgsql;
+       ),
       %(
-        CREATE TRIGGER eventbus_cdc_events_trigger AFTER INSERT ON eventbus_cdc_events
-          EXECUTE PROCEDURE public.eventbus_cdc_cleanup();
-      ), %(
         CREATE OR REPLACE FUNCTION public.eventbus_notify_change() RETURNS TRIGGER AS $$
         DECLARE
             data record;
