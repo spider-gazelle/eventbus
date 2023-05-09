@@ -35,6 +35,9 @@ Below lifecycle methods are invoked for all registered handlers
 *  **action** : `EventBus::Action` - contains one of `INSERT` | `UPDATE` | `DELETE` based on event
 *  **id** : `JSON::Any` - PG Table column `id` value
 *  **data** : `String` - JSON object in String representing table row data
+*  **changes** : `String?` - JSON object in String, contains array of hash with column name, old and new value. This field is set for `UPDATE` events only.
+
+
 ## Installation
 
 1. Add the dependency to your `shard.yml`:
@@ -136,7 +139,8 @@ All change events are published to channels in *JSON* format
   "table": "PG Table name",
   "action": "one of insert|update|delete",
   "id": "Table row ID",
-  "data" : "JSON object representing table row data"
+  "data" : "JSON object representing table row data",
+  "changes" : "JSON Array object representing updated columns with old and new value. this is only set for update events"
 }
 ```
 
