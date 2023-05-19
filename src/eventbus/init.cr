@@ -60,6 +60,12 @@ SQL
 
     EVENT_LOGGER_SETUP = [
       %(
+        BEGIN;
+      ),
+      %(
+        SELECT pg_advisory_xact_lock(2234516474639426746); -- random  64-bit signed (bigint)
+      ),
+      %(
         CREATE TABLE IF NOT EXISTS eventbus_cdc_events(
           id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           event_schema VARCHAR NOT NULL,
@@ -172,6 +178,9 @@ SQL
             END LOOP;
           END;
           $$ LANGUAGE plpgsql;
+      ),
+      %(
+        COMMIT;
       ),
     ]
   end
