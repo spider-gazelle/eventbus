@@ -72,9 +72,12 @@ class EventBus
   end
 
   private def dispatch(evt : DBEvent)
-    event = enrich(evt)
-    @handlers.each do |h|
-      spawn { h.on_event(event) }
+    if event = enrich(evt)
+      @handlers.each do |h|
+        spawn { h.on_event(event) }
+      end
+    else
+      Log.error { "Unable to dispatch event to listeners due to problem reading the event details for id #{evt.logid}" }
     end
   end
 
@@ -87,16 +90,31 @@ class EventBus
   end
 
   private def enrich(evt : DBEvent)
-    Event.new(evt.timestamp, evt.schema, evt.table, evt.action, evt.id, *fetch(evt))
+    data = fetch(evt)
+    if data
+      Event.new(evt.timestamp, evt.schema, evt.table, evt.action, evt.id, *data)
+    end
   end
 
   private def on_event(event : DBEvent)
-    dispatch(event)
+    spawn { dispatch(event) }
   end
 
-  private def fetch(evt : DBEvent) : Tuple(String, String?)
-    res = connection(&.query_one "select event_data, change_data from public.eventbus_cdc_events where id = $1", evt.logid, as: {JSON::Any, JSON::Any?})
-    {res[0].to_json, res[1].try &.to_json}
+  private def fetch(evt : DBEvent) : Tuple(String, String?)?
+    attempt = 0
+    retries = @retry_count
+    retries = 1 if retries == 0
+    while (attempt < retries)
+      begin
+        attempt += 1
+        res = connection(&.query_one "select event_data, change_data from public.eventbus_cdc_events where id = $1", evt.logid, as: {JSON::Any, JSON::Any?})
+        return {res[0].to_json, res[1].try &.to_json}
+      rescue err
+        Log.warn { "Fetching record id: #{evt.logid} from DB. Received error '#{err.message || err.class.name}'. retrying attempt ##{attempt} after #{@retry_interval} seconds" }
+        sleep(@retry_interval)
+      end
+    end
+    Log.error { "Giving up after attempting #{@retry_count} retries to re-connect to database and fetch record id: #{evt.logid}." }
   end
 
   private enum LifeCycleEvent
