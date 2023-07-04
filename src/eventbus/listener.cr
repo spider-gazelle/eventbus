@@ -115,6 +115,7 @@ class EventBus
       end
     end
     Log.error { "Giving up after attempting #{@retry_count} retries to re-connect to database and fetch record id: #{evt.logid}." }
+    nil
   end
 
   private enum LifeCycleEvent
