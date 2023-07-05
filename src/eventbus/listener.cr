@@ -102,9 +102,7 @@ class EventBus
 
   private def fetch(evt : DBEvent) : Tuple(String, String?)?
     attempt = 0
-    retries = @retry_count
-    retries = 1 if retries == 0
-    while (attempt < retries)
+    while (@retry_count <= 0 || attempt <= @retry_count)
       begin
         attempt += 1
         res = connection(&.query_one "select event_data, change_data from public.eventbus_cdc_events where id = $1", evt.logid, as: {JSON::Any, JSON::Any?})
