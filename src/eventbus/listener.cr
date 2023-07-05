@@ -105,14 +105,15 @@ class EventBus
     while (@retry_count <= 0 || attempt <= @retry_count)
       begin
         attempt += 1
+        sleep(100.milliseconds)
         res = connection(&.query_one "select event_data, change_data from public.eventbus_cdc_events where id = $1", evt.logid, as: {JSON::Any, JSON::Any?})
         return {res[0].to_json, res[1].try &.to_json}
       rescue err
-        Log.warn { "Fetching record id: #{evt.logid} from DB. Received error '#{err.message || err.class.name}'. retrying attempt ##{attempt} after #{@retry_interval} seconds" }
-        sleep(@retry_interval)
+        Log.warn { "Fetching record id: #{evt.logid} from DB. Received error '#{err.message || err.class.name}'. retrying attempt ##{attempt} after 1 second" }
+        sleep(1.second)
       end
     end
-    Log.error { "Giving up after attempting #{@retry_count} retries to re-connect to database and fetch record id: #{evt.logid}." }
+    Log.error { "Giving up after attempting #{attempt} retries to re-connect to database and fetch record id: #{evt.logid}." }
     nil
   end
 
