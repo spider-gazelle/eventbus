@@ -43,18 +43,22 @@ describe EventBus do
     eb = EventBus.new(PG_DATABASE_URL)
     eb.add_handler SpecRedisPublisher.new(REDIS_URL)
     eb.start
-    insert_rec(2)
+    size = 200
+    spawn do
+      1.upto(size) { |idx| insert_rec(idx) }
+    end
     redis = Redis.new(url: REDIS_URL)
+    count = 0
     redis.subscribe("public.spec_test.cdc_events") do |on|
       on.message do |_, message|
+        count += 1
         evt = EventBus::Event.from_json(message)
         evt.schema.should eq("public")
         evt.table.should eq("spec_test")
-        evt.id.should eq(2)
-        evt.data.should eq(%({"id":2,"name":"Testing"}))
-        redis.unsubscribe("public.spec_test.cdc_events")
+        redis.unsubscribe("public.spec_test.cdc_events") if count == size
       end
     end
+    count.should eq(size)
     eb.close
   end
 

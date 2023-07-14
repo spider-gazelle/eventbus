@@ -47,7 +47,6 @@ class EventBus
   include EventBusLogger
   include EventBusDBFuncs
 
-  # @db : DB::Database?
   @retry_attempt : Int32 = 0
   @retry_interval : Int32
   @retry_count : Int32
@@ -105,7 +104,6 @@ class EventBus
     while (@retry_count <= 0 || attempt <= @retry_count)
       begin
         attempt += 1
-        sleep(100.milliseconds)
         res = connection(&.query_one "select event_data, change_data from public.eventbus_cdc_events where id = $1", evt.logid, as: {JSON::Any, JSON::Any?})
         return {res[0].to_json, res[1].try &.to_json}
       rescue err
@@ -129,7 +127,6 @@ class EventBus
     @listener : ::PG::ListenConnection?
     @handler : (DBEvent ->)?
     @channels : Enumerable(String)
-    # @watch_dog : WatchDog
 
     HEARTBEAT_CHANNEL = "eventbus_heartbeat"
 
