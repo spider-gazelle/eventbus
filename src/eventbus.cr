@@ -3,7 +3,7 @@ require "./eventbus/*"
 class EventBus
   # :nodoc:
   alias ErrHandlerType = Exception | IO::Error
-  PARALELL_JOBS = (ENV["PARALELL_JOBS"]? || 2).to_i
+  PARALELL_JOBS = (ENV["PARALELL_JOBS"]? || 1).to_i
 
   @on_error : (ErrHandlerType ->)?
 

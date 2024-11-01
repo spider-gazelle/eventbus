@@ -86,7 +86,7 @@ class EventBus
   end
 
   private def on_event(event : DBEvent)
-    spawn { dispatch(event) }
+    dispatch(event)
   end
 
   private enum LifeCycleEvent

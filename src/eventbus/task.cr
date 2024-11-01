@@ -93,7 +93,7 @@ class EventBus
 
     def get_job?
       lock.synchronize do
-        work = tasks.pop?
+        work = tasks.shift?
         if w = work
           running << w.id
         end
