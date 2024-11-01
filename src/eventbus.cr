@@ -3,6 +3,7 @@ require "./eventbus/*"
 class EventBus
   # :nodoc:
   alias ErrHandlerType = Exception | IO::Error
+  PARALELL_JOBS = (ENV["PARALELL_JOBS"]? || 2).to_i
 
   @on_error : (ErrHandlerType ->)?
 
@@ -54,6 +55,7 @@ class EventBus
   end
 
   def start : Nil
+    task_runner.start
     dispatch(:start)
     @listener.on_event(->on_event(DBEvent))
     @listener.start ->{ dispatch(:connect) }

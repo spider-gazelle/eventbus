@@ -1,5 +1,5 @@
 name: eventbus
-version: 0.9.9
+version: 1.0.0
 license: MIT
 crystal: ">= 1.1.1"
 
@@ -7,11 +7,9 @@ dependencies:
   pg:
     github: will/crystal-pg
   redis:
-      github: stefanwille/crystal-redis 
-
+    github: stefanwille/crystal-redis
 
 development_dependencies:
   # Code style
   ameba:
     github: crystal-ameba/ameba
-

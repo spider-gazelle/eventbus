@@ -1,4 +1,4 @@
-ARG CRYSTAL_VERSION=1.5.0
+ARG CRYSTAL_VERSION=1.13.2
 FROM 84codes/crystal:${CRYSTAL_VERSION}-alpine
 
 # Create a temporary folder to hold the files
@@ -7,11 +7,11 @@ WORKDIR /app
 RUN apk upgrade --no-cache \
     && \
     apk add --update --no-cache \
-        bash \
-        ca-certificates \
-        iputils \
+    bash \
+    ca-certificates \
+    iputils \
     && \
-    apk add --no-cache -X http://dl-cdn.alpinelinux.org/alpine/edge/testing watchexec \
+    apk add --no-cache -X http://dl-cdn.alpinelinux.org/alpine/edge/community watchexec \
     && \
     update-ca-certificates
 
