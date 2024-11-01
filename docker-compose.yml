@@ -14,10 +14,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
       POSTGRES_DB: eventbus_dev
-    volumes:
-      - ${PWD}/docker_postgres_init.sql:/docker-entrypoint-initdb.d/docker_postgres_init.sql
-    ports:
-      - "5432:5432"
+
 
   redis:
     hostname: redis
@@ -42,10 +39,9 @@ services:
       - ${PWD}/src:/app/src
     environment:
       ## PostgreSQL
-      PG_DATABASE_URL: ${PG_DATABASE_URL:-postgresql://postgres:password@postgres:5432/eventbus_spec}
+      PG_DATABASE_URL: ${PG_DATABASE_URL:-postgresql://postgres:password@postgres:5432/eventbus_dev}
       ## Redis / KeyDB
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-
     depends_on:
       - postgres
       - redis
