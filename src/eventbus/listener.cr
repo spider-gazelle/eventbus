@@ -30,10 +30,10 @@ private module EventBusDBFuncs
   @@db : DB::Database?
 
   private def pool
-    (@@db ||= DB.open(@url)).not_nil!
+    @@db ||= DB.open(@url)
   end
 
-  private def connection
+  private def connection(&)
     pool.using_connection { |_db| yield _db }
   end
 
@@ -53,18 +53,18 @@ class EventBus
   @watchdog_interval : Int32
   @timeout : Int32
 
-  getter(task_runner : TaskRunner) { TaskRunner.new(PARALELL_JOBS) }
+  getter(task_runner : TaskRunner) { TaskRunner.new(PARALLEL_JOBS) }
 
   private def error_handler(err : ErrHandlerType)
     @retry_attempt += 1
     if (@retry_count <= 0) || (@retry_attempt <= @retry_count)
       Log.warn { "Received error '#{err.message || err.class.name}'. Disconnected from database, retrying attempt ##{@retry_attempt} after #{@retry_interval} seconds" }
-      @listener.set_attempts(@retry_attempt)
-      sleep(@retry_interval)
-      @listener.start ->{ dispatch(:connect) }
+      @listener.attempts = @retry_attempt
+      sleep(@retry_interval.seconds)
+      @listener.start -> { dispatch(:connect) }
     else
       Log.error(exception: err) { "Giving up after attempting #{@retry_count} retries to re-connect to database." }
-      if (on_error = @on_error)
+      if on_error = @on_error
         on_error.call(err)
       else
         raise err
@@ -79,9 +79,9 @@ class EventBus
 
   private def dispatch(evt : LifeCycleEvent)
     case evt
-    in .start?   then @handlers.each { |h| spawn { h.on_start } }
-    in .connect? then @handlers.each { |h| spawn { @retry_attempt = 0; @listener.set_attempts(0); h.on_connect } }
-    in .close?   then @handlers.each { |h| spawn { h.on_close } }
+    in .start?   then @handlers.each { |hnd| spawn { hnd.on_start } }
+    in .connect? then @handlers.each { |hnd| spawn { @retry_attempt = 0; @listener.attempts = 0; hnd.on_connect } }
+    in .close?   then @handlers.each { |hnd| spawn { hnd.on_close } }
     end
   end
 
@@ -141,14 +141,14 @@ class EventBus
       h.try &.call
     end
 
-    def set_attempts(attempts : Int32)
-      @retry_attempt = attempts
+    def attempts=(value : Int32)
+      @retry_attempt = value
     end
 
     private def event_handler(event : ::PQ::Notification)
       if event.channel == HEARTBEAT_CHANNEL
         @watch_dog.run
-        set_attempts(0)
+        self.attempts = 0
         return
       end
       @handler.try &.call(DBEvent.from_json(event.payload))
@@ -181,12 +181,13 @@ class EventBus
 
       def run : Nil
         return if @running || @stopped
+        @timer.try &.cancel
         @running = true
         @timer = Timer.new(@interval.seconds) {
           begin
             @running = false
-            connection do |db|
-              db.exec "SELECT pg_notify($1, $2)", @channel, true
+            connection do |dbc|
+              dbc.exec "SELECT pg_notify($1, $2)", @channel, true
             end
           rescue ex
             spawn { @error_handler.call(ex) }
@@ -233,7 +234,7 @@ class EventBus
         spawn do
           loop do
             sleep({Time::Span.zero, @when - Time.utc}.max)
-            break if (@completed || @cancelled)
+            break if @completed || @cancelled
             next if Time.utc < @when
             break @channel.send(nil)
           end

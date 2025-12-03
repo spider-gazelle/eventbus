@@ -10,8 +10,8 @@ Spec.after_suite { run_sql("drop table if exists #{TABLE}") }
 Spec.before_each { run_sql("delete from #{TABLE}") }
 
 def run_sql(cmd)
-  DB.open(PG_DATABASE_URL) do |db|
-    db.exec(cmd)
+  DB.open(PG_DATABASE_URL) do |dbc|
+    dbc.exec(cmd)
   end
 end
 

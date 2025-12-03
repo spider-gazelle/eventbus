@@ -44,8 +44,8 @@ module PQ
         end
         soc.sync = false
         if timeout = @conninfo.timeout
-          soc.read_timeout = timeout
-          soc.write_timeout = timeout
+          soc.read_timeout = timeout.seconds
+          soc.write_timeout = timeout.seconds
         end
       rescue e
         raise ConnectionError.new("Cannot establish connection", cause: e)

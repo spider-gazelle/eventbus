@@ -13,8 +13,8 @@ class EventBus
 
     def run
       if evt = enrich(event)
-        receivers.each do |h|
-          h.on_event(evt)
+        receivers.each do |recv|
+          recv.on_event(evt)
         end
       else
         Log.error { "Unable to dispatch event to listeners due to problem reading the event details for id #{event.logid}" }
@@ -30,13 +30,13 @@ class EventBus
 
     private def fetch(evt : DBEvent) : Tuple(String, String?)?
       attempt = 0
-      while (@retry_count <= 0 || attempt <= @retry_count)
+      while @retry_count <= 0 || attempt <= @retry_count
         begin
           attempt += 1
           res = connection(&.query_one "select event_data, change_data from public.eventbus_cdc_events where id = $1", evt.logid, as: {JSON::Any, JSON::Any?})
           return {res[0].to_json, res[1].try &.to_json}
-        rescue err
-          Log.warn { "Fetching record id: #{evt.logid} from DB. Received error '#{err.message || err.class.name}'. retrying attempt ##{attempt} after 1 second" }
+        rescue ex
+          Log.warn { "Fetching record id: #{evt.logid} from DB. Received error '#{ex.message || ex.class.name}'. retrying attempt ##{attempt} after 1 second" }
           sleep(1.second)
         end
       end
@@ -44,7 +44,7 @@ class EventBus
       nil
     end
 
-    private def connection
+    private def connection(&)
       pool.using_connection { |_db| yield _db }
     end
   end
@@ -70,14 +70,14 @@ class EventBus
 
     def has?(task_id : String, pending_only = false) : Bool
       lock.synchronize {
-        task = tasks.any? { |t| t.id == task_id }
+        task = tasks.any? { |tsk| tsk.id == task_id }
         return task if pending_only
         task || running.includes?(task_id)
       }
     end
 
     def cancel_task(task_id : String) : Nil
-      lock.synchronize { tasks.reject! { |t| t.id == task_id } }
+      lock.synchronize { tasks.reject! { |tsk| tsk.id == task_id } }
     end
 
     def start
@@ -122,7 +122,7 @@ class EventBus
             break
           end
         end
-        sleep 0.1
+        sleep 0.1.seconds
       end
       Log.info { "Terminating job workers" }
       @job_count.times { @terminate_queue.send(nil) }
@@ -138,7 +138,7 @@ class EventBus
           Log.info { "shutting down job worker" }
           break
         when timeout wait_time
-          sleep 0.1
+          sleep 0.1.seconds
         end
       rescue Channel::ClosedError
         Log.error { "shutting down job worker #{Fiber.current.name} due to channel closed" }

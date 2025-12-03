@@ -15,11 +15,12 @@ trap "trap_ctrlc" 2
 
 docker compose pull -q
 
-docker compose build -q
+docker compose run --rm postgres sh -c "rm -rf /var/lib/postgresql/data/*"
+docker compose up -d postgres redis
 
 exit_code="0"
 
-docker compose run --rm eventbus "$@" || exit_code="$?"
+docker compose run --rm test "$@" || exit_code="$?"
 
 docker compose down &> /dev/null
 

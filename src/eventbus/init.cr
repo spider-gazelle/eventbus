@@ -3,7 +3,7 @@ require "log"
 
 class EventBus
   private module PG
-    Log     = ::Log.for("PGInitalizer")
+    Log     = ::Log.for("PGInitializer")
     CHANNEL = "cdc_events"
 
     def self.ensure_cdc_for_all_tables(url) : Bool
@@ -166,12 +166,15 @@ class EventBus
         SELECT
           quote_ident(t.table_schema) || '.' || quote_ident(t.table_name) as tab_name
         FROM
-          information_schema.tables t, information_schema.columns c
+          information_schema.tables t
+          INNER JOIN information_schema.columns c
+            ON c.table_schema = t.table_schema
+            AND c.table_name = t.table_name
         WHERE
           t.table_schema NOT IN ('pg_catalog', 'information_schema')
           AND t.table_schema NOT LIKE 'pg_toast%'
           AND t.table_name != 'eventbus_cdc_events'
-          AND c.table_name = t.table_name AND c.column_name='id'
+          AND c.column_name='id'
       ) as TableNames
       LOOP
         EXECUTE  trigger_statement;

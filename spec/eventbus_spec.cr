@@ -21,7 +21,7 @@ describe EventBus do
     insert_rec(1)
     ch.receive
     eb.close
-    sleep 1
+    sleep 1.second
     sh.events.should eq(["on_start", "on_connect", "on_event", "on_close"])
   end
 
@@ -49,8 +49,8 @@ describe EventBus do
     end
     redis = Redis.new(url: REDIS_URL)
     count = 0
-    redis.subscribe("public.spec_test.cdc_events") do |on|
-      on.message do |_, message|
+    redis.subscribe("public.spec_test.cdc_events") do |onmsg|
+      onmsg.message do |_, message|
         count += 1
         evt = EventBus::Event.from_json(message)
         evt.schema.should eq("public")
@@ -76,6 +76,64 @@ describe EventBus do
     update_rec(1, "New Testing")
     evt = ch.receive
     evt.changes.should eq(%([{"new":"New Testing","old":"Testing","field":"name"}]))
+    eb.close
+  end
+
+  it "closes cleanly without hanging when idle" do
+    eb = EventBus.new(PG_DATABASE_URL)
+    eb.add_handler SpecHandler.new
+    eb.start
+    sleep 2.seconds
+    eb.close
+    sleep 0.5.seconds
+    true.should be_true
+  end
+
+  it "closes cleanly with pending tasks" do
+    ch = Channel(EventBus::Event).new
+    eb = EventBus.new(PG_DATABASE_URL)
+    eb.add_handler SpecHandler.new(ch)
+    eb.start
+    10.times { |i| insert_rec(i + 1) }
+    5.times { ch.receive }
+    eb.close
+    sleep 0.5.seconds
+    true.should be_true
+  end
+
+  it "handles multiple start/close cycles" do
+    eb = EventBus.new(PG_DATABASE_URL)
+    ch = Channel(EventBus::Event).new
+    eb.add_handler SpecHandler.new(ch)
+
+    eb.start
+    insert_rec(1)
+    ch.receive
+    eb.close
+    sleep 0.5.seconds
+
+    eb.start
+    insert_rec(2)
+    ch.receive
+    eb.close
+    sleep 0.5.seconds
+
+    true.should be_true
+  end
+
+  it "handles DELETE events" do
+    eb = EventBus.new(PG_DATABASE_URL)
+    eb.ensure_cdc_for(TABLE)
+    ch = Channel(EventBus::Event).new
+    eb.add_handler SpecHandler.new(ch)
+    eb.start
+    insert_rec(1)
+    evt = ch.receive
+    evt.action.should eq(EventBus::Action::INSERT)
+    run_sql("delete from #{TABLE} where id = 1")
+    evt = ch.receive
+    evt.action.should eq(EventBus::Action::DELETE)
+    evt.id.should eq(1)
     eb.close
   end
 end

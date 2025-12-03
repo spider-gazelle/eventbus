@@ -3,7 +3,7 @@ require "./eventbus/*"
 class EventBus
   # :nodoc:
   alias ErrHandlerType = Exception | IO::Error
-  PARALELL_JOBS = (ENV["PARALELL_JOBS"]? || 1).to_i
+  PARALLEL_JOBS = (ENV["PARALLEL_JOBS"]? || ENV["PARALELL_JOBS"]? || 1).to_i
 
   @on_error : (ErrHandlerType ->)?
 
@@ -38,7 +38,7 @@ class EventBus
   end
 
   def remove_handler(*handler : EventHandler)
-    handler.each { |h| @handlers.delete(h) }
+    handler.each { |hnd| @handlers.delete(hnd) }
     self
   end
 
@@ -58,7 +58,7 @@ class EventBus
     task_runner.start
     dispatch(:start)
     @listener.on_event(->on_event(DBEvent))
-    @listener.start ->{ dispatch(:connect) }
+    @listener.start -> { dispatch(:connect) }
     @blocking = false
   end
 
@@ -69,7 +69,7 @@ class EventBus
   end
 
   def close : Nil
-    @listener.stop ->{ dispatch(:close) }
+    @listener.stop -> { dispatch(:close) }
     @shutdown.send(nil) if @blocking
   ensure
     close_db
