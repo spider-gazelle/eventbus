@@ -16,7 +16,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     services:
       postgres:
-        image: postgres
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: eventbus_spec
           POSTGRES_USER: postgres

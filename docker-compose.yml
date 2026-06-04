@@ -1,7 +1,7 @@
 services:
   postgres:
     hostname: postgres
-    image: postgres:13-alpine
+    image: postgres:18-alpine
     container_name: postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]

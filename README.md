@@ -18,6 +18,26 @@ Shard monitors the database connectivity in a separate connection and watch for 
 
 WatchDog will trigger at every `watchdog_interval` and wait for connection status for `timeout` seconds before timing out.
 
+### CDC Trigger Management
+
+> Requires **PostgreSQL 14+** (`CREATE OR REPLACE TRIGGER`).
+
+`ensure_cdc_for` / `ensure_cdc_for_all_tables` are **idempotent**: a catalog pre-check (which takes no lock on the table) skips all DDL when the trigger is already installed, so steady-state service boots acquire **zero table locks**. When (re)installation is needed, `CREATE OR REPLACE TRIGGER` is used — it never blocks readers — protected by a `lock_timeout` with jittered, bounded retries.
+
+- Bare table names resolve to the `public` schema. Pass `"schema.table"` for other schemas.
+- `disable_cdc_for(table)` is a **no-op by default**: the trigger is shared infrastructure that other services rely on, and dropping it takes an `ACCESS EXCLUSIVE` lock that queues every read on the table behind it. Pass `force: true` to genuinely uninstall. It never raises.
+
+DDL safety configuration (constructor option / environment variable / default):
+
+- `lock_timeout` / `EVENTBUS_LOCK_TIMEOUT`: Postgres `lock_timeout` applied to CDC DDL. Default `2s`
+- `ddl_attempts` / `EVENTBUS_DDL_ATTEMPTS`: attempts before giving up when the table is lock-contended. Default `5`
+- `ddl_backoff_ms` / `EVENTBUS_DDL_BACKOFF_MS`: base backoff between attempts (exponential + jitter). Default `100`
+
+Event retention (environment variables, applied when the schema is installed):
+
+- `EVENTBUS_RETENTION`: how long rows are kept in `eventbus_cdc_events`. Default `1 day`
+- `EVENTBUS_CLEANUP_PROBABILITY`: chance an insert triggers the retention cleanup (amortises the `DELETE` instead of running it on every change). Default `0.01`
+
 ### `EventBus::EventHandler` Lifecycle methods
 
 Below lifecycle methods are invoked for all registered handlers
