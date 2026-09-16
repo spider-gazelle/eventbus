@@ -39,25 +39,23 @@ class EventBus
       errors = 0
       max_errors = @retry_count <= 0 ? MAX_FETCH_ATTEMPTS : @retry_count
       loop do
-        begin
-          if res = connection(&.query_one? "select event_data, change_data from public.eventbus_cdc_events where id = $1", args: [evt.logid], as: {JSON::Any, JSON::Any?})
-            return {res[0].to_json, res[1].try &.to_json}
-          end
-          not_found += 1
-          if not_found >= NOT_FOUND_ATTEMPTS
-            Log.error { "Record id: #{evt.logid} not found after #{not_found} attempts, likely removed by cleanup. Skipping event." }
-            return nil
-          end
-          sleep(200.milliseconds)
-        rescue ex
-          errors += 1
-          if errors >= max_errors
-            Log.error { "Giving up after attempting #{errors} retries to re-connect to database and fetch record id: #{evt.logid}." }
-            return nil
-          end
-          Log.warn { "Fetching record id: #{evt.logid} from DB. Received error '#{ex.message || ex.class.name}'. retrying attempt ##{errors} after 1 second" }
-          sleep(1.second)
+        if res = connection(&.query_one? "select event_data, change_data from public.eventbus_cdc_events where id = $1", args: [evt.logid], as: {JSON::Any, JSON::Any?})
+          return {res[0].to_json, res[1].try &.to_json}
         end
+        not_found += 1
+        if not_found >= NOT_FOUND_ATTEMPTS
+          Log.error { "Record id: #{evt.logid} not found after #{not_found} attempts, likely removed by cleanup. Skipping event." }
+          return
+        end
+        sleep(200.milliseconds)
+      rescue ex
+        errors += 1
+        if errors >= max_errors
+          Log.error { "Giving up after attempting #{errors} retries to re-connect to database and fetch record id: #{evt.logid}." }
+          return
+        end
+        Log.warn { "Fetching record id: #{evt.logid} from DB. Received error '#{ex.message || ex.class.name}'. retrying attempt ##{errors} after 1 second" }
+        sleep(1.second)
       end
     end
 
@@ -86,11 +84,11 @@ class EventBus
     end
 
     def has?(task_id : String, pending_only = false) : Bool
-      lock.synchronize {
+      lock.synchronize do
         task = tasks.any? { |tsk| tsk.id == task_id }
         return task if pending_only
         task || running.includes?(task_id)
-      }
+      end
     end
 
     def cancel_task(task_id : String) : Nil

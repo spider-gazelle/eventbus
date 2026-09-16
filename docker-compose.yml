@@ -29,9 +29,7 @@ services:
       - ${PWD}/src:/app/src
       - ${PWD}/lib:/app/lib
       - ${PWD}/spec:/app/spec
-      - ${PWD}/shard.override.yml:/app/shard.override.yml
       - ${PWD}/shard.yml:/app/shard.yml
-      - ${PWD}/.ameba.yml:/app/.ameba.yml
       - ${PWD}/views:/app/views
       - ${PWD}/www:/app/www
       # - ${PWD}/.env.example:/app/.env

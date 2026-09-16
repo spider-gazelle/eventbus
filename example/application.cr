@@ -33,7 +33,10 @@ end
 
 # Detect ctr-c to shutdown gracefully
 # Docker containers use the term signal
+# Retain compatibility with Crystal versions before Process.on_terminate.
+# ameba:disable Lint/SignalTrap
 Signal::INT.trap &terminate
+# ameba:disable Lint/SignalTrap
 Signal::TERM.trap &terminate
 
 # Allow signals to change the log level at run-time

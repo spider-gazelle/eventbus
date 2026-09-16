@@ -1,4 +1,5 @@
 require "spec"
+require "redis"
 require "../src/eventbus"
 
 PG_DATABASE_URL = ENV["PG_DATABASE_URL"]

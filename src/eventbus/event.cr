@@ -27,7 +27,7 @@ class EventBus
     DELETE
 
     def to_s(io : IO) : Nil
-      io << self.to_s.downcase
+      io << to_s.downcase
     end
   end
 

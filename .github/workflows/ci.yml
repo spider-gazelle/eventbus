@@ -48,6 +48,10 @@ jobs:
           crystal: ${{ matrix.crystal }}
       - name: Install shards
         run: shards install --ignore-crystal-version
+      - name: Build lint tool
+        run: |
+          mkdir -p bin
+          crystal build -o bin/ameba lib/ameba/bin/ameba.cr
       - name: Lint
         run: ./bin/ameba
       - name: Format

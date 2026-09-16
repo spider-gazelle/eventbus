@@ -183,16 +183,14 @@ class EventBus
         return if @running || @stopped
         @timer.try &.cancel
         @running = true
-        @timer = Timer.new(@interval.seconds) {
-          begin
-            @running = false
-            connection do |dbc|
-              dbc.exec "SELECT pg_notify($1, $2)", @channel, true
-            end
-          rescue ex
-            spawn { @error_handler.call(ex) }
+        @timer = Timer.new(@interval.seconds) do
+          @running = false
+          connection do |dbc|
+            dbc.exec "SELECT pg_notify($1, $2)", @channel, true
           end
-        }
+        rescue ex
+          spawn { @error_handler.call(ex) }
+        end
       end
 
       def stop
