@@ -52,8 +52,13 @@ class EventBus
     PG.ensure_cdc_for_all_tables(@url, @lock_timeout, @ddl_attempts, @ddl_backoff_ms)
   end
 
-  def ensure_cdc_for(table : String) : Bool
-    PG.ensure_cdc_for(@url, table, @lock_timeout, @ddl_attempts, @ddl_backoff_ms)
+  def ensure_cdc_for(table : String, ignore_update_columns : Array(String)? = nil) : Bool
+    PG.ensure_cdc_for(@url, table, @lock_timeout, @ddl_attempts, @ddl_backoff_ms, ignore_update_columns)
+  end
+
+  # Replace a shared table policy only if the installed policy matches the expectation.
+  def replace_cdc_update_policy(table : String, ignore_update_columns : Array(String), expected_ignore_update_columns : Array(String)) : Bool
+    PG.ensure_cdc_for(@url, table, @lock_timeout, @ddl_attempts, @ddl_backoff_ms, ignore_update_columns, expected_ignore_update_columns)
   end
 
   # No-op unless `force` is set: the CDC trigger is shared infrastructure that other

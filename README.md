@@ -22,7 +22,7 @@ WatchDog will trigger at every `watchdog_interval` and wait for connection statu
 
 > Requires **PostgreSQL 14+** (`CREATE OR REPLACE TRIGGER`).
 
-`ensure_cdc_for` / `ensure_cdc_for_all_tables` are **idempotent**: a catalog pre-check (which takes no lock on the table) skips all DDL when the trigger is already installed, so steady-state service boots acquire **zero table locks**. When (re)installation is needed, `CREATE OR REPLACE TRIGGER` is used — it never blocks readers — protected by a `lock_timeout` with jittered, bounded retries.
+`ensure_cdc_for` / `ensure_cdc_for_all_tables` are **idempotent**: a catalog pre-check (which takes no lock on the table) skips all DDL when the trigger is already installed, so steady-state service boots acquire **zero table locks**. Installing or replacing triggers uses `CREATE OR REPLACE TRIGGER`, protected by a `lock_timeout` with jittered, bounded retries. Resetting a filtered policy also drops its UPDATE trigger, which can briefly require an exclusive table lock; the same timeout and retries apply.
 
 - Bare table names resolve to the `public` schema. Pass `"schema.table"` for other schemas.
 - `disable_cdc_for(table)` is a **no-op by default**: the trigger is shared infrastructure that other services rely on, and dropping it takes an `ACCESS EXCLUSIVE` lock that queues every read on the table behind it. Pass `force: true` to genuinely uninstall. It never raises.
@@ -37,6 +37,41 @@ Event retention (environment variables, applied when the schema is installed):
 
 - `EVENTBUS_RETENTION`: how long rows are kept in `eventbus_cdc_events`. Default `1 day`
 - `EVENTBUS_CLEANUP_PROBABILITY`: chance an insert triggers the retention cleanup (amortises the `DELETE` instead of running it on every change). Default `0.01`
+
+### Ignore telemetry-only updates per table
+
+Declare ignored columns when registering a table (an ORM can supply this from model metadata):
+
+```crystal
+eventbus.ensure_cdc_for("displays", ignore_update_columns: ["last_seen", "current_item_id"])
+```
+
+An UPDATE changing only those columns produces no CDC event. The database still persists the update and enforces its constraints. An UPDATE changing any other column produces the normal event, including its full row and all changed fields. INSERT and DELETE continue to notify. On a filtered table, an UPDATE changing no values is also silent; unconfigured tables retain their existing behavior.
+
+The filter runs in the SQL UPDATE trigger's `WHEN` condition, before EventBus computes the change payload, writes its event row or sends `NOTIFY`. No application-side filtering or per-update configuration lookup is required.
+
+Configuration belongs to the table, so all subscribers share it. Omitting `ignore_update_columns` preserves the installed policy, including during `ensure_cdc_for_all_tables`. Repeating the same declaration is idempotent; conflicting declarations raise an error instead of silently replacing another service's policy. Ignored columns must exist in the table and cannot include the row identity column `id`. An explicit empty list on an unconfigured table leaves it unconfigured; it does not reserve an unfiltered policy against future declarations.
+
+For an intentional policy change, supply the expected current policy. This prevents a deployment from overwriting a policy it did not expect:
+
+```crystal
+eventbus.replace_cdc_update_policy(
+  "displays",
+  ignore_update_columns: ["last_seen"],
+  expected_ignore_update_columns: ["last_seen", "current_item_id"]
+)
+
+# Restore ordinary UPDATE events, including no-op updates.
+eventbus.replace_cdc_update_policy(
+  "displays",
+  ignore_update_columns: [] of String,
+  expected_ignore_update_columns: ["last_seen"]
+)
+```
+
+Policy metadata is stored in comments on both managed triggers and is preserved by ordinary registration. Do not replace these comments manually; they let EventBus repair a missing or altered trigger without losing the policy. Forced uninstall removes both triggers and their metadata.
+
+Install the policy before starting heartbeat writers if the first write must be silent. Upgrade every service that installs EventBus triggers before enabling filtering: older installers can restore the legacy combined trigger while leaving the new UPDATE trigger, causing both unwanted and duplicate events. Suppression applies to every writer of the ignored fields, and consumers relying on those telemetry events must read the persisted values directly or use another notification path.
 
 ### `EventBus::EventHandler` Lifecycle methods
 
@@ -172,6 +207,16 @@ Given you have the following dependencies...
 - [docker-compose](https://github.com/docker/compose)
 
 It is simple to develop the service with docker.
+
+Install dependencies and build the lint tool before running checks:
+
+```shell-session
+$ shards install
+$ mkdir -p bin
+$ crystal build -o bin/ameba lib/ameba/bin/ameba.cr
+$ ./bin/ameba
+$ crystal tool format --check
+```
 
 ### With Docker
 

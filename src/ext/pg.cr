@@ -33,7 +33,10 @@ module PQ
       @mutex = Mutex.new
       @server_parameters = Hash(String, String).new
       @established = false
+      # Match the callback types exposed by crystal-pg.
+      # ameba:disable Lint/VoidOutsideLib
       @notice_handler = Proc(Notice, Void).new { }
+      # ameba:disable Lint/VoidOutsideLib
       @notification_handler = Proc(Notification, Void).new { }
 
       begin

@@ -7,8 +7,10 @@ class EventBus
     Log     = ::Log.for("PGInitializer")
     CHANNEL = "cdc_events"
 
-    TRIGGER_NAME = "eventbus_notify_change_event"
-    TRIGGER_PROC = "public.eventbus_notify_change()"
+    TRIGGER_NAME        = "eventbus_notify_change_event"
+    UPDATE_TRIGGER_NAME = "eventbus_notify_change_update"
+    POLICY_PREFIX       = "eventbus:update-policy:v1:"
+    TRIGGER_PROC        = "public.eventbus_notify_change()"
 
     # DDL safety defaults, overridable via environment or `EventBus.new` options.
     LOCK_TIMEOUT   = ENV["EVENTBUS_LOCK_TIMEOUT"]? || "2s"
@@ -50,11 +52,11 @@ class EventBus
       end
     end
 
-    def self.ensure_cdc_for(url, table, lock_timeout : String = LOCK_TIMEOUT, attempts : Int32 = DDL_ATTEMPTS, backoff_ms : Int32 = DDL_BACKOFF_MS) : Bool
+    def self.ensure_cdc_for(url, table, lock_timeout : String = LOCK_TIMEOUT, attempts : Int32 = DDL_ATTEMPTS, backoff_ms : Int32 = DDL_BACKOFF_MS, ignore_update_columns : Array(String)? = nil, expected_ignore_update_columns : Array(String)? = nil) : Bool
       qualified = QualifiedTable.parse(table)
       with_ddl_connection(url) do |conn|
         setup_eventbus(conn, url)
-        install_trigger(conn, qualified, lock_timeout, attempts, backoff_ms)
+        install_trigger(conn, qualified, lock_timeout, attempts, backoff_ms, ignore_update_columns, expected_ignore_update_columns)
       end
     end
 
@@ -77,7 +79,8 @@ class EventBus
     # DDL and acquires no table locks at all. When (re)installation is needed,
     # CREATE OR REPLACE TRIGGER only takes SHARE ROW EXCLUSIVE — readers are never
     # blocked — and lock_timeout with bounded retries stops writer contention queueing.
-    private def self.install_trigger(conn, table : QualifiedTable, lock_timeout, attempts, backoff_ms) : Bool
+    # Resetting a policy also drops the UPDATE trigger, requiring ACCESS EXCLUSIVE.
+    private def self.install_trigger(conn, table : QualifiedTable, lock_timeout, attempts, backoff_ms, requested : Array(String)? = nil, expected : Array(String)? = nil) : Bool
       with_ddl_retry("ensure_cdc_for", table, attempts, backoff_ms) do
         conn.transaction do |tx|
           db = tx.connection
@@ -85,14 +88,57 @@ class EventBus
           # taken across check + DDL so a concurrent force-disable cannot interleave;
           # keyed on the relation oid so the lock identity matches the catalog identity
           db.exec(ADVISORY_LOCK_SQL, args: [TRIGGER_LOCK_SPACE, table.quoted])
-          if db.scalar(TRIGGER_MATCH_SQL, args: [table.quoted]).as(Bool)
+          metadata = installed_policy(db, table)
+          current = metadata.try(&.columns) || [] of String
+          desired = requested.try(&.uniq.sort!) || current
+          check_policy(table, current, desired, requested, expected)
+          validate_columns(db, table, desired)
+          base_type = desired.empty? ? 29 : 13
+          base_matches = trigger_matches?(db, table, TRIGGER_NAME, base_type, nil)
+          update_matches = desired.empty? ? !trigger_exists?(db, table, UPDATE_TRIGGER_NAME) : trigger_matches?(db, table, UPDATE_TRIGGER_NAME, 17, metadata.try(&.condition))
+          if current == desired && base_matches && update_matches
+            restore_metadata(db, table, metadata) if metadata
             Log.debug { "CDC trigger already installed on #{table.quoted}" }
           else
             Log.info { "Installing CDC trigger on #{table.quoted}" }
-            db.exec(sprintf(CREATE_TRIGGER, table.quoted))
+            if desired.empty?
+              db.exec(sprintf(CREATE_TRIGGER, table.quoted))
+              db.exec("DROP TRIGGER IF EXISTS #{UPDATE_TRIGGER_NAME} ON #{table.quoted}") unless update_matches
+              db.exec("COMMENT ON TRIGGER #{TRIGGER_NAME} ON #{table.quoted} IS NULL")
+            else
+              columns = desired.map { |column| sql_literal(column) }.join(", ")
+              condition = "(to_jsonb(OLD) - ARRAY[#{columns}]::text[]) IS DISTINCT FROM (to_jsonb(NEW) - ARRAY[#{columns}]::text[])"
+              db.exec("CREATE OR REPLACE TRIGGER #{TRIGGER_NAME} AFTER INSERT OR DELETE ON #{table.quoted} FOR EACH ROW EXECUTE FUNCTION #{TRIGGER_PROC}")
+              db.exec("CREATE OR REPLACE TRIGGER #{UPDATE_TRIGGER_NAME} AFTER UPDATE ON #{table.quoted} FOR EACH ROW WHEN (#{condition}) EXECUTE FUNCTION #{TRIGGER_PROC}")
+              fingerprint = db.scalar("SELECT tgqual::text FROM pg_trigger WHERE tgrelid = $1::regclass AND tgname = $2", args: [table.quoted, UPDATE_TRIGGER_NAME]).as(String)
+              comment = sql_literal(POLICY_PREFIX + UpdatePolicy.new(desired, fingerprint).to_json)
+              [TRIGGER_NAME, UPDATE_TRIGGER_NAME].each do |name|
+                db.exec("COMMENT ON TRIGGER #{name} ON #{table.quoted} IS #{comment}")
+              end
+            end
           end
         end
         true
+      end
+    end
+
+    private def self.check_policy(table, current, desired, requested, expected)
+      if expected
+        unless current == expected.uniq.sort!
+          raise ArgumentError.new("CDC update policy for #{table} changed; expected #{expected}, found #{current}")
+        end
+      elsif requested && !current.empty? && current != desired
+        raise ArgumentError.new("Conflicting CDC update policy for #{table}: #{current} versus #{desired}; use replace_cdc_update_policy")
+      end
+    end
+
+    private def self.restore_metadata(db, table, metadata : UpdatePolicy)
+      comment = POLICY_PREFIX + metadata.to_json
+      [TRIGGER_NAME, UPDATE_TRIGGER_NAME].each do |name|
+        existing = db.scalar("SELECT obj_description(oid, 'pg_trigger') FROM pg_trigger WHERE tgrelid = $1::regclass AND tgname = $2", args: [table.quoted, name]).as(String?)
+        unless existing == comment
+          db.exec("COMMENT ON TRIGGER #{name} ON #{table.quoted} IS #{sql_literal(comment)}")
+        end
       end
     end
 
@@ -103,9 +149,79 @@ class EventBus
           db.exec("SELECT set_config('lock_timeout', $1, true)", args: [lock_timeout])
           db.exec(ADVISORY_LOCK_SQL, args: [TRIGGER_LOCK_SPACE, table.quoted])
           db.exec(sprintf(DROP_TRIGGER, table.quoted))
+          db.exec("DROP TRIGGER IF EXISTS #{UPDATE_TRIGGER_NAME} ON #{table.quoted}")
         end
         true
       end
+    end
+
+    private struct UpdatePolicy
+      include JSON::Serializable
+      getter columns : Array(String)
+      getter condition : String
+
+      def initialize(@columns, @condition)
+      end
+    end
+
+    # Redundant trigger comments let either trigger be repaired after accidental removal.
+    # Metadata is deployment state; ordinary subscribers never supply a separate list.
+    private def self.installed_policy(db, table) : UpdatePolicy?
+      policies = [] of UpdatePolicy
+      has_update = false
+      db.query_each("SELECT tgname, obj_description(oid, 'pg_trigger') FROM pg_trigger WHERE tgrelid = $1::regclass AND tgname IN ($2, $3)", args: [table.quoted, TRIGGER_NAME, UPDATE_TRIGGER_NAME]) do |row|
+        name = row.read(String)
+        has_update ||= name == UPDATE_TRIGGER_NAME
+        if comment = row.read(String?)
+          if comment.starts_with?(POLICY_PREFIX)
+            policies << UpdatePolicy.from_json(comment[POLICY_PREFIX.size..])
+          elsif comment.starts_with?("eventbus:update-policy:")
+            raise ArgumentError.new("Unsupported CDC update policy metadata for #{table}")
+          end
+        end
+      end
+      if policies.empty?
+        raise ArgumentError.new("CDC update policy metadata missing for #{table}; explicitly restore trigger metadata before registration") if has_update
+        return
+      end
+      policy = policies.first
+      unless policies.all? { |entry| entry.columns == policy.columns && entry.condition == policy.condition }
+        raise ArgumentError.new("Inconsistent CDC update policy metadata for #{table}")
+      end
+      policy
+    end
+
+    private def self.validate_columns(db, table, columns)
+      return if columns.empty?
+      actual = [] of String
+      db.query_each("SELECT attname FROM pg_attribute WHERE attrelid = $1::regclass AND attnum > 0 AND NOT attisdropped", args: [table.quoted]) do |row|
+        actual << row.read(String)
+      end
+      columns.each do |column|
+        unless actual.includes?(column) && column != "id"
+          raise ArgumentError.new("Invalid ignored update column #{column.inspect} for #{table}; must exist and cannot be id")
+        end
+      end
+    end
+
+    private def self.sql_literal(value : String) : String
+      "E'" + value.gsub("\\", "\\\\").gsub("'", "''") + "'"
+    end
+
+    private def self.trigger_exists?(db, table, name) : Bool
+      db.scalar("SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid = $1::regclass AND tgname = $2)", args: [table.quoted, name]).as(Bool)
+    end
+
+    private def self.trigger_matches?(db, table, name, type, condition : String?) : Bool
+      return false if name == UPDATE_TRIGGER_NAME && condition.nil?
+      db.scalar(<<-SQL, args: [table.quoted, name, type, condition]).as(Bool)
+        SELECT EXISTS(SELECT 1 FROM pg_trigger
+        WHERE tgrelid = $1::regclass AND tgname = $2 AND tgtype = $3
+          AND NOT tgisinternal AND tgenabled = 'O'
+          AND tgfoid = to_regprocedure('#{TRIGGER_PROC}')
+          AND tgnargs = 0 AND tgattr = ''::int2vector
+          AND tgqual::text IS NOT DISTINCT FROM $4::text)
+        SQL
     end
 
     # All DDL runs on a single dedicated (non-pooled) connection so transaction-scoped
@@ -190,11 +306,15 @@ class EventBus
     # resolve to the public schema, matching what pg-orm passes.
     private record QualifiedTable, schema : String, name : String do
       def self.parse(table : String) : QualifiedTable
-        if separator = table.index('.')
-          new(unquote(table[0...separator]), unquote(table[(separator + 1)..]))
-        else
-          new("public", unquote(table))
+        match = /\A("(?:[^"]|"")*"|[^".]+)(?:\.("(?:[^"]|"")*"|[^".]+))?\z/.match(table)
+        raise ArgumentError.new("Invalid table identifier #{table.inspect}") unless match
+        first = unquote(match[1])
+        second = match[2]?.try { |part| unquote(part) }
+        parts = second ? [first, second] : ["public", first]
+        unless parts.all? { |part| !part.empty? && part.bytesize <= 63 && !part.includes?('\0') }
+          raise ArgumentError.new("Invalid table identifier #{table.inspect}")
         end
+        new(parts[0], parts[1])
       end
 
       protected def self.unquote(part : String) : String
@@ -225,150 +345,128 @@ class EventBus
     # ACCESS EXCLUSIVE so readers are never blocked.
     CREATE_TRIGGER = <<-SQL
 
-    CREATE OR REPLACE TRIGGER #{TRIGGER_NAME} AFTER INSERT OR UPDATE OR DELETE ON %s
-    FOR EACH ROW EXECUTE FUNCTION #{TRIGGER_PROC};
+      CREATE OR REPLACE TRIGGER #{TRIGGER_NAME} AFTER INSERT OR UPDATE OR DELETE ON %s
+      FOR EACH ROW EXECUTE FUNCTION #{TRIGGER_PROC};
 
-    SQL
-
-    # Catalog pre-check: takes no lock on the subject table. Compares structured
-    # pg_trigger fields rather than pg_get_triggerdef() text, whose normalization
-    # (clause ordering, quoting) varies between server versions.
-    TRIGGER_MATCH_SQL = <<-SQL
-    SELECT EXISTS (
-      SELECT 1
-      FROM pg_trigger t
-      WHERE t.tgrelid = $1::regclass
-        AND t.tgname = '#{TRIGGER_NAME}'
-        AND NOT t.tgisinternal
-        AND t.tgenabled = 'O'
-        AND (t.tgtype & 1)  = 1   -- FOR EACH ROW
-        AND (t.tgtype & 2)  = 0   -- AFTER (not BEFORE)
-        AND (t.tgtype & 4)  = 4   -- INSERT
-        AND (t.tgtype & 8)  = 8   -- DELETE
-        AND (t.tgtype & 16) = 16  -- UPDATE
-        AND (t.tgtype & 32) = 0   -- not TRUNCATE
-        AND (t.tgtype & 64) = 0   -- not INSTEAD OF
-        AND t.tgfoid = to_regprocedure('#{TRIGGER_PROC}')
-    )
-    SQL
+      SQL
 
     LIST_TABLES_SQL = <<-SQL
-    SELECT DISTINCT t.table_schema, t.table_name
-    FROM information_schema.tables t
-    INNER JOIN information_schema.columns c
-      ON c.table_schema = t.table_schema
-      AND c.table_name = t.table_name
-    WHERE t.table_type = 'BASE TABLE'
-      AND t.table_schema NOT IN ('pg_catalog', 'information_schema')
-      AND t.table_schema NOT LIKE 'pg_toast%'
-      AND t.table_name != 'eventbus_cdc_events'
-      AND c.column_name = 'id'
-    ORDER BY t.table_schema, t.table_name
-    SQL
+      SELECT DISTINCT t.table_schema, t.table_name
+      FROM information_schema.tables t
+      INNER JOIN information_schema.columns c
+        ON c.table_schema = t.table_schema
+        AND c.table_name = t.table_name
+      WHERE t.table_type = 'BASE TABLE'
+        AND t.table_schema NOT IN ('pg_catalog', 'information_schema')
+        AND t.table_schema NOT LIKE 'pg_toast%'
+        AND t.table_name != 'eventbus_cdc_events'
+        AND c.column_name = 'id'
+      ORDER BY t.table_schema, t.table_name
+      SQL
 
     SETUP_STATEMENTS = [
-      %(
-            CREATE TABLE IF NOT EXISTS eventbus_cdc_events(
-              id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-              event_schema VARCHAR NOT NULL,
-              event_table VARCHAR NOT NULL,
-              event_action VARCHAR NOT NULL,
-              row_id TEXT NOT NULL,
-              event_data JSONB NOT NULL,
-              created_at TIMESTAMP NOT NULL
-            );
-          ),
-      %(
-            ALTER TABLE eventbus_cdc_events ADD COLUMN IF NOT EXISTS change_data JSONB;
-          ),
-      %(
-            CREATE INDEX IF NOT EXISTS eventbus_cdc_events_created_at_idx
-            ON eventbus_cdc_events (created_at);
-          ),
-      %(
-      CREATE OR REPLACE FUNCTION public.eventbus_cdc_run_cleanup() RETURNS void AS $$
-      BEGIN
-          DELETE FROM eventbus_cdc_events where created_at < CURRENT_TIMESTAMP - INTERVAL '#{RETENTION}';
-      END;
-      $$ LANGUAGE plpgsql;
-    ),
-      %(
-      CREATE OR REPLACE FUNCTION public.eventbus_cdc_cleanup() RETURNS TRIGGER AS $$
-      BEGIN
-          -- probabilistic gate: retention is amortised across inserts instead of
-          -- running a DELETE inside every writer's transaction
-          IF random() < #{CLEANUP_PROBABILITY} THEN
-            PERFORM public.eventbus_cdc_run_cleanup();
+      <<-SQL,
+        CREATE TABLE IF NOT EXISTS eventbus_cdc_events(
+          id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          event_schema VARCHAR NOT NULL,
+          event_table VARCHAR NOT NULL,
+          event_action VARCHAR NOT NULL,
+          row_id TEXT NOT NULL,
+          event_data JSONB NOT NULL,
+          created_at TIMESTAMP NOT NULL
+        );
+        SQL
+      <<-SQL,
+        ALTER TABLE eventbus_cdc_events ADD COLUMN IF NOT EXISTS change_data JSONB;
+        SQL
+      <<-SQL,
+        CREATE INDEX IF NOT EXISTS eventbus_cdc_events_created_at_idx
+        ON eventbus_cdc_events (created_at);
+        SQL
+      <<-SQL,
+        CREATE OR REPLACE FUNCTION public.eventbus_cdc_run_cleanup() RETURNS void AS $$
+        BEGIN
+            DELETE FROM eventbus_cdc_events where created_at < CURRENT_TIMESTAMP - INTERVAL '#{RETENTION}';
+        END;
+        $$ LANGUAGE plpgsql;
+        SQL
+      <<-SQL,
+        CREATE OR REPLACE FUNCTION public.eventbus_cdc_cleanup() RETURNS TRIGGER AS $$
+        BEGIN
+            -- probabilistic gate: retention is amortised across inserts instead of
+            -- running a DELETE inside every writer's transaction
+            IF random() < #{CLEANUP_PROBABILITY} THEN
+              PERFORM public.eventbus_cdc_run_cleanup();
+            END IF;
+            RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql;
+        SQL
+      <<-SQL,
+        DO $$
+        BEGIN
+          IF NOT EXISTS(SELECT * FROM information_schema.triggers
+            WHERE event_object_table = 'eventbus_cdc_events'
+            AND trigger_name = 'eventbus_cdc_events_trigger'
+          )
+          THEN
+            CREATE TRIGGER eventbus_cdc_events_trigger AFTER INSERT ON eventbus_cdc_events
+            EXECUTE PROCEDURE public.eventbus_cdc_cleanup();
           END IF;
-          RETURN NULL;
-      END;
-      $$ LANGUAGE plpgsql;
-    ),
-      %(
-      DO $$
-      BEGIN
-        IF NOT EXISTS(SELECT * FROM information_schema.triggers
-          WHERE event_object_table = 'eventbus_cdc_events'
-          AND trigger_name = 'eventbus_cdc_events_trigger'
-        )
-        THEN
-          CREATE TRIGGER eventbus_cdc_events_trigger AFTER INSERT ON eventbus_cdc_events
-          EXECUTE PROCEDURE public.eventbus_cdc_cleanup();
-        END IF;
-      END;
-      $$ LANGUAGE plpgsql;
-     ),
-      %(
-      CREATE OR REPLACE FUNCTION public.eventbus_notify_change() RETURNS TRIGGER AS $$
-      DECLARE
-          data record;
-          log_id integer;
-          notification json;
-          change json;
-      BEGIN
-          -- Convert the old or new row to JSON, based on the kind of action.
-          -- Action = DELETE?             -> OLD row
-          -- Action = INSERT or UPDATE?   -> NEW row
-          IF (TG_OP = 'DELETE') THEN
-              data =  OLD;
-          ELSE
-              data =  NEW;
-          END IF;
+        END;
+        $$ LANGUAGE plpgsql;
+        SQL
+      <<-SQL,
+        CREATE OR REPLACE FUNCTION public.eventbus_notify_change() RETURNS TRIGGER AS $$
+        DECLARE
+            data record;
+            log_id integer;
+            notification json;
+            change json;
+        BEGIN
+            -- Convert the old or new row to JSON, based on the kind of action.
+            -- Action = DELETE?             -> OLD row
+            -- Action = INSERT or UPDATE?   -> NEW row
+            IF (TG_OP = 'DELETE') THEN
+                data =  OLD;
+            ELSE
+                data =  NEW;
+            END IF;
 
-          IF (TG_OP = 'UPDATE') THEN
-            change := (SELECT JSON_AGG(src) FROM (SELECT pre.key AS field, pre.value AS old, post.value AS new
-                                FROM jsonb_each(to_jsonb(OLD)) AS pre
-                                CROSS JOIN jsonb_each(to_jsonb(NEW)) AS post
-                                WHERE pre.key = post.key AND pre.value IS DISTINCT FROM post.value) src);
-          ELSE
-            change := NULL;
-          END IF;
+            IF (TG_OP = 'UPDATE') THEN
+              change := (SELECT JSON_AGG(src) FROM (SELECT pre.key AS field, pre.value AS old, post.value AS new
+                                  FROM jsonb_each(to_jsonb(OLD)) AS pre
+                                  CROSS JOIN jsonb_each(to_jsonb(NEW)) AS post
+                                  WHERE pre.key = post.key AND pre.value IS DISTINCT FROM post.value) src);
+            ELSE
+              change := NULL;
+            END IF;
 
-         -- Save data to events table
-         INSERT INTO eventbus_cdc_events(event_schema, event_table, event_action, row_id, created_at, event_data, change_data)
-              VALUES (TG_TABLE_SCHEMA,TG_TABLE_NAME, LOWER(TG_OP), data.id, CURRENT_TIMESTAMP, to_jsonb(data), change)
-              RETURNING id INTO log_id;
-         -- Construct json payload
-         -- note that here can be done projection
-          notification = json_build_object(
-                              'logid', log_id,
-                              'timestamp',CURRENT_TIMESTAMP,
-                              'schema',TG_TABLE_SCHEMA,
-                              'table',TG_TABLE_NAME,
-                              'action', LOWER(TG_OP),
-                              'id', data.id);
+           -- Save data to events table
+           INSERT INTO eventbus_cdc_events(event_schema, event_table, event_action, row_id, created_at, event_data, change_data)
+                VALUES (TG_TABLE_SCHEMA,TG_TABLE_NAME, LOWER(TG_OP), data.id, CURRENT_TIMESTAMP, to_jsonb(data), change)
+                RETURNING id INTO log_id;
+           -- Construct json payload
+           -- note that here can be done projection
+            notification = json_build_object(
+                                'logid', log_id,
+                                'timestamp',CURRENT_TIMESTAMP,
+                                'schema',TG_TABLE_SCHEMA,
+                                'table',TG_TABLE_NAME,
+                                'action', LOWER(TG_OP),
+                                'id', data.id);
 
-           -- note that channel name MUST be lowercase, otherwise pg_notify() won't work
-          -- Execute pg_notify(channel, notification)
-          PERFORM pg_notify('cdc_events',notification::text);
-          -- Result is ignored since we are invoking this in an AFTER trigger
-          RETURN NULL;
-      END;
-      $$ LANGUAGE plpgsql;
-    ),
-      %(
-      DROP FUNCTION IF EXISTS public.eventbus_cdc_for_all_tables();
-    ),
+             -- note that channel name MUST be lowercase, otherwise pg_notify() won't work
+            -- Execute pg_notify(channel, notification)
+            PERFORM pg_notify('cdc_events',notification::text);
+            -- Result is ignored since we are invoking this in an AFTER trigger
+            RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql;
+        SQL
+      <<-SQL,
+        DROP FUNCTION IF EXISTS public.eventbus_cdc_for_all_tables();
+        SQL
     ]
   end
 end
