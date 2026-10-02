@@ -50,9 +50,9 @@ An UPDATE changing only those columns produces no CDC event. The database still 
 
 The filter runs in the SQL UPDATE trigger's `WHEN` condition, before EventBus computes the change payload, writes its event row or sends `NOTIFY`. No application-side filtering or per-update configuration lookup is required.
 
-Configuration belongs to the table, so all subscribers share it. Omitting `ignore_update_columns` preserves the installed policy, including during `ensure_cdc_for_all_tables`. Repeating the same declaration is idempotent; conflicting declarations raise an error instead of silently replacing another service's policy. Ignored columns must exist in the table and cannot include the row identity column `id`. An explicit empty list on an unconfigured table leaves it unconfigured; it does not reserve an unfiltered policy against future declarations.
+Configuration belongs to the table, so all subscribers share it. Omitting `ignore_update_columns` preserves the installed policy, including during `ensure_cdc_for_all_tables`. Repeating the same declaration is idempotent. A differing declaration replaces the installed policy (logging a warning), so adding or removing ignored columns in a model takes effect on the next deploy without manual intervention; all services registering the same table should therefore declare the same columns. Ignored columns must exist in the table and cannot include the row identity column `id`. An explicit empty list on an unconfigured table leaves it unconfigured; it does not reserve an unfiltered policy against future declarations.
 
-For an intentional policy change, supply the expected current policy. This prevents a deployment from overwriting a policy it did not expect:
+To change a policy only if it currently matches a known state (compare-and-swap), supply the expected current policy. This raises instead of overwriting a policy the caller did not expect:
 
 ```crystal
 eventbus.replace_cdc_update_policy(

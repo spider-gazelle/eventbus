@@ -52,6 +52,8 @@ class EventBus
     PG.ensure_cdc_for_all_tables(@url, @lock_timeout, @ddl_attempts, @ddl_backoff_ms)
   end
 
+  # Explicit `ignore_update_columns` are authoritative and replace any differing
+  # installed policy; omitting them preserves the installed policy.
   def ensure_cdc_for(table : String, ignore_update_columns : Array(String)? = nil) : Bool
     PG.ensure_cdc_for(@url, table, @lock_timeout, @ddl_attempts, @ddl_backoff_ms, ignore_update_columns)
   end

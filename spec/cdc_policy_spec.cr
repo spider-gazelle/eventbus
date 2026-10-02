@@ -46,11 +46,45 @@ describe "per-table CDC update policy" do
     policy_events.should eq(1)
   end
 
-  it "rejects conflicts and uses expected current policy for deliberate reset" do
+  it "replaces the installed policy when a differing policy is declared" do
     eb = EventBus.new(PG_DATABASE_URL)
     eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["heartbeat"]).should be_true
-    expect_raises(ArgumentError) { eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["item"]) }
-    expect_raises(ArgumentError) { eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: [] of String) }
+    eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["heartbeat", "item"]).should be_true
+    run_sql("INSERT INTO #{POLICY_TABLE} VALUES (1, 'a', 0, NULL)")
+    run_sql("UPDATE #{POLICY_TABLE} SET heartbeat = 1, item = 'b'")
+    policy_events.should eq(1)
+
+    # narrowing the policy restores events for the removed column
+    eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["heartbeat"]).should be_true
+    run_sql("UPDATE #{POLICY_TABLE} SET item = 'c'")
+    policy_events.should eq(2)
+    run_sql("UPDATE #{POLICY_TABLE} SET heartbeat = 2")
+    policy_events.should eq(2)
+
+    # the replaced policy is preserved by ordinary registration
+    eb.ensure_cdc_for(POLICY_TABLE).should be_true
+    eb.ensure_cdc_for_all_tables.should be_true
+    run_sql("UPDATE #{POLICY_TABLE} SET heartbeat = 3")
+    policy_events.should eq(2)
+
+    # an explicit empty list restores ordinary UPDATE events
+    eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: [] of String).should be_true
+    query_scalar("SELECT count(*) FROM pg_trigger WHERE tgrelid = '#{POLICY_TABLE}'::regclass AND tgname = 'eventbus_notify_change_update'").should eq(0)
+    run_sql("UPDATE #{POLICY_TABLE} SET heartbeat = 4")
+    policy_events.should eq(3)
+  end
+
+  it "validates columns before replacing the installed policy" do
+    eb = EventBus.new(PG_DATABASE_URL)
+    eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["heartbeat"]).should be_true
+    before = trigger_meta(POLICY_TABLE)
+    expect_raises(ArgumentError) { eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["heartbeat", "missing"]) }
+    trigger_meta(POLICY_TABLE).should eq(before)
+  end
+
+  it "uses expected current policy for compare-and-swap reset" do
+    eb = EventBus.new(PG_DATABASE_URL)
+    eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["heartbeat"]).should be_true
     expect_raises(ArgumentError) { eb.replace_cdc_update_policy(POLICY_TABLE, ignore_update_columns: [] of String, expected_ignore_update_columns: ["item"]) }
     eb.replace_cdc_update_policy(POLICY_TABLE, ignore_update_columns: [] of String, expected_ignore_update_columns: ["heartbeat"]).should be_true
     run_sql("INSERT INTO #{POLICY_TABLE} VALUES (1, 'a', 0, NULL)")
@@ -159,7 +193,7 @@ describe "CDC policy reconciliation" do
     end
   end
 
-  it "serializes conflicting concurrent declarations" do
+  it "serializes conflicting concurrent declarations into one consistent policy" do
     eb = EventBus.new(PG_DATABASE_URL)
     eb.replace_cdc_update_policy(POLICY_TABLE, ignore_update_columns: [] of String, expected_ignore_update_columns: ["heartbeat"]).should be_true
     results = Channel(Bool).new(2)
@@ -170,7 +204,12 @@ describe "CDC policy reconciliation" do
         results.send(false)
       end
     end
-    [results.receive, results.receive].count(true).should eq(1)
+    [results.receive, results.receive].should eq([true, true])
+    # both trigger comments agree, so ordinary registration accepts the winner
+    eb.ensure_cdc_for(POLICY_TABLE).should be_true
+    run_sql("INSERT INTO #{POLICY_TABLE} VALUES (1, 'a', 0, NULL)")
+    run_sql("UPDATE #{POLICY_TABLE} SET heartbeat = 1, item = 'b'")
+    policy_events.should eq(2)
   end
 end
 
@@ -209,13 +248,17 @@ describe "CDC policy safety" do
     begin
       eb = EventBus.new(PG_DATABASE_URL)
       eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: ["heartbeat"]).should be_true
+      run_sql("DELETE FROM eventbus_cdc_events WHERE event_table = '#{POLICY_TABLE}'")
       ["eventbus_notify_change_event", "eventbus_notify_change_update"].each do |name|
         other = name == "eventbus_notify_change_event" ? "eventbus_notify_change_update" : "eventbus_notify_change_event"
         run_sql("COMMENT ON TRIGGER #{name} ON #{POLICY_TABLE} IS NULL")
         eb.ensure_cdc_for(POLICY_TABLE).should be_true
         run_sql("DROP TRIGGER #{other} ON #{POLICY_TABLE}")
         eb.ensure_cdc_for(POLICY_TABLE).should be_true
-        expect_raises(ArgumentError) { eb.ensure_cdc_for(POLICY_TABLE, ignore_update_columns: [] of String) }
+        run_sql("INSERT INTO #{POLICY_TABLE} VALUES (1, 0)")
+        run_sql("UPDATE #{POLICY_TABLE} SET heartbeat = heartbeat + 1")
+        query_scalar("SELECT count(*) FROM eventbus_cdc_events WHERE event_table = '#{POLICY_TABLE}' AND event_action = 'update'").should eq(0)
+        run_sql("DELETE FROM #{POLICY_TABLE}")
       end
     ensure
       run_sql("DROP TABLE #{POLICY_TABLE}")

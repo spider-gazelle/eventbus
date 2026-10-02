@@ -127,8 +127,10 @@ class EventBus
         unless current == expected.uniq.sort!
           raise ArgumentError.new("CDC update policy for #{table} changed; expected #{expected}, found #{current}")
         end
-      elsif requested && !current.empty? && current != desired
-        raise ArgumentError.new("Conflicting CDC update policy for #{table}: #{current} versus #{desired}; use replace_cdc_update_policy")
+      elsif requested && current != desired
+        # the declaring service's schema is authoritative: replacing the policy keeps
+        # deployments seamless when the set of ignored columns changes
+        Log.warn { "Replacing CDC update policy for #{table}: #{current} with #{desired}" } unless current.empty?
       end
     end
 
